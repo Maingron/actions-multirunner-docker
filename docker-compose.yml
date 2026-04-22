@@ -1,0 +1,25 @@
+services:
+  runners:
+    build:
+      context: .
+      args:
+        RUNNER_VERSION: "2.334.0"
+    image: github-multirunner:latest
+    restart: unless-stopped
+    # Optional: long-lived credential used to auto-fetch fresh registration
+    # tokens for any runner in config.yml that sets `pat:` (or for all of
+    # them, if you leave `pat` out and rely on this). Put it in a .env file
+    # next to this compose file as GITHUB_PAT=ghp_xxx.
+    environment:
+      GITHUB_PAT: ${GITHUB_PAT:-}
+    # Each runner forks processes per job; 1000 runners is a lot of PIDs/FDs.
+    ulimits:
+      nofile: 1048576
+      nproc: 1048576
+    pids_limit: -1
+    volumes:
+      - ./config.yml:/etc/github-runners/config.yml:ro
+    # tmpfs keeps runner working dirs in RAM so nothing persists on disk.
+    # Size it according to your job needs and host RAM.
+    tmpfs:
+      - /home/github-runner:size=8g,mode=0755,uid=1000,gid=1000

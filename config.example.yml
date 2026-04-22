@@ -1,0 +1,52 @@
+# Example runner inventory. Mount your real file over
+# /etc/github-runners/config.yml at runtime.
+#
+# Per-runner fields:
+#   title      - unique runner name prefix (ephemeral runners append a
+#                timestamp + counter so names don't collide across jobs)
+#   repo_url   - full URL of the repo (or org) the runner registers against
+#   pat        - personal access token used to mint per-job JIT configs.
+#                Overrides defaults.pat / $GITHUB_PAT.
+#                Fine-grained PATs work: they need
+#                   repo: "Administration" = read & write
+#                   org:  "Self-hosted runners" = read & write
+#                Classic PATs also work (scope: repo, or admin:org).
+#   token      - only used when ephemeral: false. Static registration token
+#                (≈1h lifetime). Ignored when `pat` is set (a fresh one is
+#                fetched then).
+#   ephemeral  - true (default) or false. Overrides defaults.ephemeral.
+#   workdir    - optional, relative to /home/github-runner. Defaults to
+#                "<repo_name>/<title>".
+#   labels     - optional CSV, defaults to "self-hosted,linux,x64"
+#
+# `defaults` applies to every runner unless overridden. `pat` can also come
+# from the GITHUB_PAT env var so you never have to put it in the file.
+
+defaults:
+  ephemeral: true
+  # pat: github_pat_xxxxxxxxxxxxxxxxxxxx    # or set GITHUB_PAT in the environment
+
+runners:
+  # Ephemeral JIT runner (recommended). Auto-deregisters after each job;
+  # no /actions/runner-registration call, no registration-token tango.
+  - title: build-01
+    repo_url: https://github.com/your-org/your-repo
+    pat: github_pat_yyyyyyyyyyyyyyyyyyyy
+
+  # Same, with custom workdir + labels.
+  - title: build-02
+    repo_url: https://github.com/your-org/your-repo
+    workdir: your-repo/build-02
+    labels: self-hosted,linux,x64,fast
+
+  # Long-lived runner: registers once, keeps the session across jobs.
+  # Token is auto-fetched via PAT; falls back to `token:` if no PAT.
+  - title: persistent-01
+    repo_url: https://github.com/your-org/your-repo
+    ephemeral: false
+    workdir: your-repo/persistent-01
+
+  # Org-level ephemeral runner.
+  - title: org-runner-01
+    repo_url: https://github.com/your-org
+    pat: github_pat_zzzzzzzzzzzzzzzzzzzz
