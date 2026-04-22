@@ -6,11 +6,27 @@ set -euo pipefail
 
 CONFIG_FILE="${CONFIG_FILE:-/etc/github-runners/config.yml}"
 RUNNERS_BASE="${RUNNERS_BASE:-/home/github-runner}"
+# Source template baked into the image (set via Dockerfile ENV).
+SOURCE_TEMPLATE_DIR="${TEMPLATE_DIR:-/opt/actions-runner}"
+# Staged copy that lives on the same filesystem as the per-runner instance
+# dirs, so `cp -al` (hardlink farm) works.
+TEMPLATE_DIR="${RUNNERS_BASE}/.template"
 
 if [[ ! -r "$CONFIG_FILE" ]]; then
     echo "entrypoint: config file not readable: $CONFIG_FILE" >&2
     exit 1
 fi
+
+# Stage the template onto the same filesystem as the per-runner instance
+# dirs. If the image's template lives on an overlay FS and instance dirs
+# are on tmpfs, `cp -al` hits EXDEV -- so we copy once here, then every
+# runner hardlinks from this staged copy.
+if [[ ! -d "$TEMPLATE_DIR" || -z "$(ls -A "$TEMPLATE_DIR" 2>/dev/null || true)" ]]; then
+    echo "entrypoint: staging template at $TEMPLATE_DIR"
+    mkdir -p "$TEMPLATE_DIR"
+    cp -a "$SOURCE_TEMPLATE_DIR/." "$TEMPLATE_DIR/"
+fi
+export TEMPLATE_DIR
 
 # Emit one line per runner, fields separated by ASCII Unit Separator (\x1f)
 # so empty fields (e.g. unset token) are preserved by `read`. Tab cannot be

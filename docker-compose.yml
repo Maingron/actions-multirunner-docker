@@ -21,5 +21,8 @@ services:
       - ./config.yml:/etc/github-runners/config.yml:ro
     # tmpfs keeps runner working dirs in RAM so nothing persists on disk.
     # Size it according to your job needs and host RAM.
+    # NOTE: docker's default tmpfs mount is `noexec`; runner binaries
+    # (./run.sh, externals/node20/bin/node, ...) live here, so we must
+    # allow exec.
     tmpfs:
-      - /home/github-runner:size=8g,mode=0755,uid=1000,gid=1000
+      - /home/github-runner:exec,size=8g,mode=0755,uid=1000,gid=1000

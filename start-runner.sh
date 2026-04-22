@@ -30,7 +30,7 @@ repo_url="$2"
 static_token="$3"
 runner_dir="$4"
 
-TEMPLATE_DIR="${TEMPLATE_DIR:-/opt/actions-runner}"
+TEMPLATE_DIR="${TEMPLATE_DIR:-/home/github-runner/.template}"
 RESTART_DELAY="${RUNNER_RESTART_DELAY:-5}"
 EPHEMERAL="${EPHEMERAL:-1}"
 PAT="${PAT:-}"
@@ -41,15 +41,15 @@ log() { printf '[%s] %s\n' "$title" "$*"; }
 
 materialise() {
     rm -rf "$runner_dir"
-    mkdir -p "$runner_dir"
-    # Prefer hardlinks (same-FS only). If template and instance dir are on
-    # different filesystems (tmpfs instance vs overlay template) hardlinks
-    # fail with EXDEV, so fall back to a symlink tree. run.sh only writes
-    # new files into the instance dir, so the shared template stays intact.
-    if ! cp -al "$TEMPLATE_DIR/." "$runner_dir/" 2>/dev/null; then
-        rm -rf "$runner_dir"
-        mkdir -p "$runner_dir"
-        cp -as "$TEMPLATE_DIR/." "$runner_dir/"
+    mkdir -p "$(dirname "$runner_dir")"
+    # Hardlink farm: same-FS hardlinks keep disk/RAM usage flat regardless
+    # of runner count. The template is staged onto the instance FS by
+    # entrypoint.sh specifically so this always succeeds -- a symlink
+    # fallback would make every runner share the template's state files.
+    if ! cp -al "$TEMPLATE_DIR" "$runner_dir"; then
+        echo "start-runner: failed to hardlink template ($TEMPLATE_DIR) into $runner_dir" >&2
+        echo "start-runner: template must live on the same filesystem as $runner_dir" >&2
+        exit 1
     fi
 }
 
