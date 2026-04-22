@@ -54,6 +54,13 @@
 # `defaults` applies to every runner unless overridden. `pat` can also come
 # from the GITHUB_PAT env var so you never have to put it in the file.
 
+general:
+  # Remove containers named `github-multirunner-*` that are no longer part of
+  # the rendered compose file (e.g. after removing an `image:` from the
+  # inventory, or renaming slugs). Off by default -- opt in if you want
+  # `./start.sh` to tidy up stale containers automatically.
+  autoprune: false
+
 defaults:
   ephemeral: true
   image: debian:stable-slim

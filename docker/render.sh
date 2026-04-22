@@ -153,6 +153,8 @@ EOF
         BASE_IMAGE: ${image}
         RUNNER_IMAGE_FLAVOR: ${image}
     image: github-multirunner:${tag}
+    container_name: github-multirunner-${tag}
+    hostname: github-multirunner-${tag}
     environment:
       GITHUB_PAT: \${GITHUB_PAT:-}
       RUNNER_IMAGE_FLAVOR: ${image}
