@@ -34,12 +34,14 @@ COPY entrypoint.sh       /usr/local/bin/entrypoint.sh
 COPY start-runner.sh     /usr/local/bin/start-runner.sh
 COPY fetch-token.sh      /usr/local/bin/fetch-token.sh
 COPY fetch-jitconfig.sh  /usr/local/bin/fetch-jitconfig.sh
+COPY delete-runner.sh    /usr/local/bin/delete-runner.sh
 COPY diag.sh             /usr/local/bin/diag.sh
 COPY config.example.yml  /etc/github-runners/config.yml
 RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/start-runner.sh \
              /usr/local/bin/fetch-token.sh \
              /usr/local/bin/fetch-jitconfig.sh \
+             /usr/local/bin/delete-runner.sh \
              /usr/local/bin/diag.sh \
  && chown -R github-runner:github-runner /etc/github-runners
 

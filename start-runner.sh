@@ -61,15 +61,28 @@ get_reg_token() {
     fi
 }
 
+CURRENT_RUNNER_ID=""
+JIT_ID_FILE=""
+
 stop_child() {
     if [[ -n "${RUN_PID:-}" ]] && kill -0 "$RUN_PID" 2>/dev/null; then
         kill -TERM "$RUN_PID" 2>/dev/null || true
         wait "$RUN_PID" 2>/dev/null || true
     fi
-    # Non-ephemeral cleanup: deregister via classic flow.
-    if [[ "$EPHEMERAL" != "1" && -d "$runner_dir" ]]; then
+    if [[ "$EPHEMERAL" == "1" ]]; then
+        # JIT runners auto-deregister after a completed job, but if we were
+        # killed mid-idle (registered, no job yet) GitHub keeps the entry
+        # listed as "offline" forever. Delete it via API.
+        if [[ -n "$CURRENT_RUNNER_ID" && -n "$PAT" ]]; then
+            log "deregistering JIT runner id=${CURRENT_RUNNER_ID}"
+            /usr/local/bin/delete-runner.sh "$repo_url" "$PAT" "$CURRENT_RUNNER_ID" || true
+        fi
+        [[ -n "$JIT_ID_FILE" ]] && rm -f "$JIT_ID_FILE"
+    elif [[ -d "$runner_dir" ]]; then
+        # Persistent cleanup: deregister via classic flow.
         local tok
         if tok="$(get_reg_token 2>/dev/null)"; then
+            log "deregistering persistent runner"
             (cd "$runner_dir" && ./config.sh remove --token "$tok") >/dev/null 2>&1 || true
         fi
     fi
@@ -83,6 +96,8 @@ if [[ "$EPHEMERAL" == "1" ]]; then
         exit 1
     fi
 
+    JIT_ID_FILE="$(mktemp)"
+
     # Each iteration = one ephemeral runner, one job, full flush.
     iter=0
     while true; do
@@ -94,7 +109,9 @@ if [[ "$EPHEMERAL" == "1" ]]; then
         runner_name="${title}-$(date +%s)-${iter}"
 
         log "minting JIT config for ${runner_name}"
-        if ! jitcfg="$(/usr/local/bin/fetch-jitconfig.sh \
+        : > "$JIT_ID_FILE"
+        if ! jitcfg="$(JITCONFIG_ID_FILE="$JIT_ID_FILE" \
+                       /usr/local/bin/fetch-jitconfig.sh \
                         "$repo_url" "$PAT" \
                         "$runner_name" "$RUNNER_LABELS" \
                         "$RUNNER_GROUP_ID")"; then
@@ -102,6 +119,7 @@ if [[ "$EPHEMERAL" == "1" ]]; then
             sleep "$RESTART_DELAY"
             continue
         fi
+        CURRENT_RUNNER_ID="$(cat "$JIT_ID_FILE" 2>/dev/null || true)"
 
         materialise
         cd "$runner_dir"
@@ -111,6 +129,10 @@ if [[ "$EPHEMERAL" == "1" ]]; then
         RUN_PID=$!
         wait "$RUN_PID" || true
         unset RUN_PID
+
+        # Completed job => GitHub already removed it. Clear to avoid a
+        # spurious DELETE on shutdown.
+        CURRENT_RUNNER_ID=""
 
         log "job finished, flushing state"
         sleep "$RESTART_DELAY"

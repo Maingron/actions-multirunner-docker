@@ -74,9 +74,16 @@ if [[ -z "$cfg" ]]; then
     exit 1
 fi
 
+rid="$(printf '%s' "$body" | jq -r '.runner.id // empty')"
+
+# Let callers recover the server-side runner id (needed to deregister a JIT
+# runner that was killed before its job finished). Opt-in via env var.
+if [[ -n "${JITCONFIG_ID_FILE:-}" && -n "$rid" ]]; then
+    printf '%s\n' "$rid" > "$JITCONFIG_ID_FILE"
+fi
+
 if [[ "${RUNNER_DEBUG:-0}" == "1" ]]; then
-    rid="$(printf '%s' "$body" | jq -r '.runner.id // "?"')"
-    echo "fetch-jitconfig: minted JIT config for runner id=${rid} (${scope})" >&2
+    echo "fetch-jitconfig: minted JIT config for runner id=${rid:-?} (${scope})" >&2
 fi
 
 printf '%s\n' "$cfg"
