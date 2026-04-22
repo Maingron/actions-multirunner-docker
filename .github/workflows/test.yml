@@ -8,4 +8,4 @@ jobs:
     runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
     steps:
       - name: Say hello from bash
-        run: echo "Hello from the multirunner test workflow; Running on $(hostname)"
+        run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
