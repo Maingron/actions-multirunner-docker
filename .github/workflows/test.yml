@@ -1,0 +1,11 @@
+name: Multirunner Tester
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
+    steps:
+      - name: Say hello from bash
+        run: echo "Hello from the multirunner test workflow; Running on $(hostname)"
