@@ -44,7 +44,11 @@ fi
 #
 # Emits one image reference per line, in first-seen order.
 # ---------------------------------------------------------------------------
-mapfile -t IMAGES < <(awk -v default_image="$DEFAULT_IMAGE" '
+IMAGES=()
+while IFS= read -r __img_line; do
+    [[ -z "$__img_line" ]] && continue
+    IMAGES+=("$__img_line")
+done < <(awk -v default_image="$DEFAULT_IMAGE" '
     function flush(    img) {
         if (in_item) {
             img = cur_image
@@ -104,6 +108,7 @@ mapfile -t IMAGES < <(awk -v default_image="$DEFAULT_IMAGE" '
         }
     }
 ' "$CONFIG_FILE")
+unset __img_line
 
 if [[ ${#IMAGES[@]} -eq 0 ]]; then
     IMAGES=("$DEFAULT_IMAGE")

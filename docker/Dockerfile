@@ -19,7 +19,7 @@ ENV RUNNER_VERSION=${RUNNER_VERSION} \
 COPY docker/scripts/install-packages.sh /usr/local/bin/install-packages.sh
 RUN chmod +x /usr/local/bin/install-packages.sh \
  && /usr/local/bin/install-packages.sh \
-        ca-certificates curl git jq sudo tini python3 python3-yaml
+        ca-certificates curl git jq sudo tini gawk
 
 RUN set -eux; \
     # Recent ubuntu images ship a default `ubuntu` user at UID 1000 which\
@@ -53,6 +53,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/delete-runner.sh \
              /usr/local/bin/runner-store.sh \
              /usr/local/bin/install-packages.sh \
+             /usr/local/bin/parse-config.sh \
              /usr/local/bin/diag.sh \
  && chown -R github-runner:github-runner /etc/github-runners
 

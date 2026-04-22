@@ -43,72 +43,12 @@ export RUNNER_IMAGE_FLAVOR
 # token / workdir / pat / startup_script / additional_packages may be empty;
 # ephemeral is "1" or "0"; idle_regeneration is seconds (0 = disabled);
 # image is a flavor name; additional_packages is a space-separated list.
-mapfile -t RUNNERS < <(python3 - "$CONFIG_FILE" <<'PY'
-import os, sys, yaml
-
-def as_pkg_list(val):
-    if val is None:
-        return []
-    if isinstance(val, str):
-        return [p for p in val.replace(",", " ").split() if p]
-    if isinstance(val, (list, tuple)):
-        out = []
-        for p in val:
-            p = str(p).strip()
-            if p:
-                out.append(p)
-        return out
-    return []
-
-with open(sys.argv[1]) as fh:
-    doc = yaml.safe_load(fh) or {}
-
-defaults = doc.get("defaults", {}) or {}
-default_ephemeral = bool(defaults.get("ephemeral", True))
-default_pat = str(defaults.get("pat", "") or os.environ.get("GITHUB_PAT", "")).strip()
-default_labels = str(defaults.get("labels", "") or "self-hosted,linux,x64").strip()
-default_group = int(defaults.get("runner_group_id", 1) or 1)
-default_idle = int(defaults.get("idle_regeneration", 0) or 0)
-default_image = str(defaults.get("image", "debian:stable-slim") or "debian:stable-slim").strip().lower()
-default_startup = str(defaults.get("startup_script", "") or "").strip()
-default_packages = as_pkg_list(defaults.get("additional_packages"))
-
-for r in doc.get("runners", []) or []:
-    title    = str(r["title"]).strip()
-    repo_url = str(r["repo_url"]).strip().rstrip("/")
-    if repo_url.endswith(".git"):
-        repo_url = repo_url[:-4]
-    token    = str(r.get("token", "") or "").strip()
-    workdir  = str(r.get("workdir", "") or "").strip().lstrip("/")
-    ephemeral = bool(r.get("ephemeral", default_ephemeral))
-    pat      = str(r.get("pat", "") or default_pat).strip()
-    labels   = str(r.get("labels", "") or default_labels).strip()
-    group    = int(r.get("runner_group_id", default_group) or default_group)
-    idle     = int(r.get("idle_regeneration", default_idle) or 0)
-    image    = str(r.get("image", default_image) or default_image).strip().lower()
-    startup  = str(r.get("startup_script", default_startup) or "").strip()
-    # additional_packages: merge defaults + per-runner, preserve order, dedupe.
-    pkgs = []
-    seen = set()
-    for p in default_packages + as_pkg_list(r.get("additional_packages")):
-        if p not in seen:
-            seen.add(p); pkgs.append(p)
-    pkgs_str = " ".join(pkgs)
-
-    if not title or not repo_url:
-        sys.exit(f"invalid runner entry (missing title/repo_url): {r!r}")
-    if ephemeral and not pat:
-        sys.exit(f"runner {title!r}: ephemeral runners require `pat` "
-                 f"(per-runner, defaults.pat, or $GITHUB_PAT)")
-    if not ephemeral and not token and not pat:
-        sys.exit(f"runner {title!r}: persistent runners need either `token` "
-                 f"or a `pat` to fetch one")
-
-    print("\x1f".join([title, repo_url, token, workdir,
-                       "1" if ephemeral else "0", pat, labels, str(group),
-                       str(idle), image, startup, pkgs_str]))
-PY
-)
+RUNNERS=()
+while IFS= read -r __runner_line; do
+    [[ -z "$__runner_line" ]] && continue
+    RUNNERS+=("$__runner_line")
+done < <(/usr/local/bin/parse-config.sh "$CONFIG_FILE")
+unset __runner_line
 
 if [[ ${#RUNNERS[@]} -eq 0 ]]; then
     echo "entrypoint: no runners defined in $CONFIG_FILE" >&2

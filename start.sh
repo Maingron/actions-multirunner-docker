@@ -27,13 +27,8 @@ mkdir -p startup-scripts
 ./docker/render.sh
 
 # Read general.autoprune from config.yml (defaults to false).
-autoprune="$(python3 -c 'import yaml,sys
-try:
-    d=yaml.safe_load(open("config.yml")) or {}
-    v=((d.get("general") or {}).get("autoprune"))
-    print("true" if v is True or str(v).lower() in ("true","yes","1","on") else "false")
-except Exception:
-    print("false")')"
+autoprune="$(./docker/scripts/parse-config.sh --get general.autoprune config.yml 2>/dev/null || echo false)"
+[[ "$autoprune" == "true" ]] || autoprune="false"
 
 # Prune stale containers left over from previous renders. Container names
 # follow `github-multirunner-<image-slug>` (see render.sh). Any such
@@ -42,11 +37,8 @@ except Exception:
 prune_stale_containers() {
     local wanted current stale name
     wanted="$(docker compose -f docker/docker-compose.yml config --format json \
-              | python3 -c 'import json,sys
-d=json.load(sys.stdin).get("services",{})
-for s in d.values():
-    n=s.get("container_name")
-    if n: print(n)' 2>/dev/null || true)"
+              | jq -r '.services[] | select(.container_name != null) | .container_name' \
+              2>/dev/null || true)"
     current="$(docker ps -a --filter 'name=^github-multirunner-' --format '{{.Names}}' 2>/dev/null || true)"
     [[ -z "$current" ]] && return 0
     stale=()
