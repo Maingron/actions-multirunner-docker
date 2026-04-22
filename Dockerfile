@@ -1,7 +1,10 @@
-FROM debian:stable-slim
+ARG BASE_IMAGE=debian:stable-slim
+FROM ${BASE_IMAGE}
 
 ARG RUNNER_VERSION=2.334.0
+ARG RUNNER_IMAGE_FLAVOR=debian
 ENV RUNNER_VERSION=${RUNNER_VERSION} \
+    RUNNER_IMAGE_FLAVOR=${RUNNER_IMAGE_FLAVOR} \
     DEBIAN_FRONTEND=noninteractive \
     CONFIG_FILE=/etc/github-runners/config.yml \
     RUNNERS_BASE=/home/github-runner \
@@ -15,9 +18,13 @@ RUN apt-get update \
         ca-certificates curl git jq sudo tini python3 python3-yaml \
  && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --home-dir /home/github-runner --shell /bin/bash github-runner \
- && mkdir -p /etc/github-runners "${TEMPLATE_DIR}" /var/lib/github-runners \
- && chown github-runner:github-runner /home/github-runner /var/lib/github-runners
+RUN set -eux; \
+    # Recent ubuntu images ship a default `ubuntu` user at UID 1000 which\
+    # collides with github-runner. Drop it if present.\
+    if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu 2>/dev/null || userdel ubuntu; fi; \
+    useradd --create-home --home-dir /home/github-runner --shell /bin/bash --uid 1000 github-runner; \
+    mkdir -p /etc/github-runners "${TEMPLATE_DIR}" /var/lib/github-runners; \
+    chown github-runner:github-runner /home/github-runner /var/lib/github-runners
 
 # Fetch + extract the official runner tarball once; every runner instance
 # will be materialised from this template via hardlinks at start time.

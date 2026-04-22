@@ -23,13 +23,26 @@
 #                  The runner is deregistered via API, then a fresh JIT
 #                  config is minted. 0 / unset disables it. Ignored for
 #                  ephemeral: false.
+#   image      - optional, docker base image. Any image that has apt +
+#                glibc works. Examples:
+#                   debian:stable-slim   (default)
+#                   debian:bookworm
+#                   debian:trixie
+#                   ubuntu:24.04
+#                   ubuntu:22.04
+#                Each unique image becomes one docker-compose service --
+#                run `./render-compose.py` after editing the inventory to
+#                regenerate docker-compose.yml, then `docker compose up`.
+#                A runner is only launched by the container whose image
+#                matches.
 #
 # `defaults` applies to every runner unless overridden. `pat` can also come
 # from the GITHUB_PAT env var so you never have to put it in the file.
 
 defaults:
   ephemeral: true
-  idle_regeneration: 0               # rotate idle runners every hour
+  image: debian:stable-slim
+  idle_regeneration: 0                      # 0 = disabled; e.g. 3600 = rotate idle runners every hour
   # pat: github_pat_xxxxxxxxxxxxxxxxxxxx    # or set GITHUB_PAT in the environment
 
 runners:
@@ -56,3 +69,15 @@ runners:
   - title: org-runner-01
     repo_url: https://github.com/your-org
     pat: github_pat_zzzzzzzzzzzzzzzzzzzz
+
+  # Ephemeral runner on a different base image.
+  - title: ubuntu-01
+    repo_url: https://github.com/your-org/your-repo
+    image: ubuntu:24.04
+    pat: github_pat_yyyyyyyyyyyyyyyyyyyy
+
+  # Yet another flavor, for jobs that need bookworm specifically.
+  - title: bookworm-01
+    repo_url: https://github.com/your-org/your-repo
+    image: debian:bookworm
+    pat: github_pat_yyyyyyyyyyyyyyyyyyyy

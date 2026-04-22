@@ -30,12 +30,14 @@ shift || true
 case "$cmd" in
     add)
         repo_url="$1"; runner_id="$2"; runner_name="$3"
+        flavor="${RUNNER_IMAGE_FLAVOR:-}"
         [[ -z "$runner_id" ]] && exit 0
         line="$(jq -nc \
             --arg repo_url "$repo_url" \
             --arg name     "$runner_name" \
+            --arg flavor   "$flavor" \
             --argjson id   "$runner_id" \
-            '{repo_url: $repo_url, id: $id, name: $name}')"
+            '{repo_url: $repo_url, id: $id, name: $name, flavor: $flavor}')"
         (
             flock -x 9
             printf '%s\n' "$line" >> "$STORE_FILE"

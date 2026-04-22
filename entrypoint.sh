@@ -30,12 +30,18 @@ if [[ ! -d "$TEMPLATE_DIR" || -z "$(ls -A "$TEMPLATE_DIR" 2>/dev/null || true)" 
 fi
 export TEMPLATE_DIR
 
+# This container runs one specific base image (e.g. debian:stable-slim,
+# ubuntu:24.04). Runners in config.yml can opt into an image via their
+# `image:` field; we only launch the ones that match this container.
+RUNNER_IMAGE_FLAVOR="${RUNNER_IMAGE_FLAVOR:-debian:stable-slim}"
+export RUNNER_IMAGE_FLAVOR
+
 # Emit one line per runner, fields separated by ASCII Unit Separator (\x1f)
 # so empty fields (e.g. unset token) are preserved by `read`. Tab cannot be
 # used because bash treats it as whitespace in IFS and collapses runs of it.
-#   title \x1f repo_url \x1f token \x1f workdir \x1f ephemeral \x1f pat \x1f labels \x1f group \x1f idle_regeneration
+#   title \x1f repo_url \x1f token \x1f workdir \x1f ephemeral \x1f pat \x1f labels \x1f group \x1f idle_regeneration \x1f image
 # token / workdir / pat may be empty; ephemeral is "1" or "0";
-# idle_regeneration is seconds (0 = disabled).
+# idle_regeneration is seconds (0 = disabled); image is a flavor name.
 mapfile -t RUNNERS < <(python3 - "$CONFIG_FILE" <<'PY'
 import os, sys, yaml
 
@@ -48,6 +54,7 @@ default_pat = str(defaults.get("pat", "") or os.environ.get("GITHUB_PAT", "")).s
 default_labels = str(defaults.get("labels", "") or "self-hosted,linux,x64").strip()
 default_group = int(defaults.get("runner_group_id", 1) or 1)
 default_idle = int(defaults.get("idle_regeneration", 0) or 0)
+default_image = str(defaults.get("image", "debian:stable-slim") or "debian:stable-slim").strip().lower()
 
 for r in doc.get("runners", []) or []:
     title    = str(r["title"]).strip()
@@ -61,6 +68,7 @@ for r in doc.get("runners", []) or []:
     labels   = str(r.get("labels", "") or default_labels).strip()
     group    = int(r.get("runner_group_id", default_group) or default_group)
     idle     = int(r.get("idle_regeneration", default_idle) or 0)
+    image    = str(r.get("image", default_image) or default_image).strip().lower()
 
     if not title or not repo_url:
         sys.exit(f"invalid runner entry (missing title/repo_url): {r!r}")
@@ -73,7 +81,7 @@ for r in doc.get("runners", []) or []:
 
     print("\x1f".join([title, repo_url, token, workdir,
                        "1" if ephemeral else "0", pat, labels, str(group),
-                       str(idle)]))
+                       str(idle), image]))
 PY
 )
 
@@ -82,14 +90,25 @@ if [[ ${#RUNNERS[@]} -eq 0 ]]; then
     exit 1
 fi
 
+# Keep only runners whose image flavor matches this container.
+MATCHED=()
+for line in "${RUNNERS[@]}"; do
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img <<<"$line"
+    if [[ "$r_img" == "$RUNNER_IMAGE_FLAVOR" ]]; then
+        MATCHED+=("$line")
+    fi
+done
+RUNNERS=("${MATCHED[@]}")
+
 # Sweep stale runners from previous container lifetimes. A JIT runner that
 # was killed mid-idle or whose container crashed stays in the GitHub UI as
 # "offline" forever. We persisted each minted id in $RUNNER_STATE_FILE, so
 # iterate that list now and DELETE anything that's still there. The PAT is
-# resolved per repo_url from the current config.
+# resolved per repo_url from the current config. Only sweep entries minted
+# by this flavor -- sibling containers handle their own.
 declare -A REPO_PAT=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ <<<"$line"
     [[ -n "$r_pat" ]] && REPO_PAT["$r_url"]="$r_pat"
 done
 
@@ -98,6 +117,10 @@ if [[ -s "$RUNNER_STATE_FILE" ]]; then
     stale_cleaned=0
     while IFS= read -r rec; do
         [[ -z "$rec" ]] && continue
+        r_flavor="$(jq -r '.flavor // ""' <<<"$rec")"
+        if [[ -n "$r_flavor" && "$r_flavor" != "$RUNNER_IMAGE_FLAVOR" ]]; then
+            continue
+        fi
         stale_total=$((stale_total + 1))
         r_url="$(jq -r '.repo_url' <<<"$rec")"
         r_id="$(jq -r '.id'       <<<"$rec")"
@@ -109,15 +132,23 @@ if [[ -s "$RUNNER_STATE_FILE" ]]; then
         fi
         if /usr/local/bin/delete-runner.sh "$r_url" "$r_pat" "$r_id"; then
             stale_cleaned=$((stale_cleaned + 1))
+            /usr/local/bin/runner-store.sh remove "$r_id" || true
         fi
     done < <(/usr/local/bin/runner-store.sh list)
     if (( stale_total > 0 )); then
-        echo "entrypoint: cleaned ${stale_cleaned}/${stale_total} stale runner(s) from previous run"
+        echo "entrypoint[${RUNNER_IMAGE_FLAVOR}]: cleaned ${stale_cleaned}/${stale_total} stale runner(s) from previous run"
     fi
-    /usr/local/bin/runner-store.sh clear
 fi
 
-echo "entrypoint: starting ${#RUNNERS[@]} runner(s)"
+if [[ ${#RUNNERS[@]} -eq 0 ]]; then
+    echo "entrypoint[${RUNNER_IMAGE_FLAVOR}]: no runners target this image flavor, idling"
+    # Stay alive so `restart: unless-stopped` doesn't thrash. Exit cleanly
+    # on SIGTERM.
+    trap 'exit 0' SIGTERM SIGINT
+    while true; do sleep 3600 & wait $!; done
+fi
+
+echo "entrypoint[${RUNNER_IMAGE_FLAVOR}]: starting ${#RUNNERS[@]} runner(s)"
 
 declare -a PIDS=()
 
@@ -132,7 +163,7 @@ shutdown() {
 trap shutdown SIGTERM SIGINT
 
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration <<<"$line"
+    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image <<<"$line"
 
     if [[ -z "$workdir" ]]; then
         repo_name="${repo_url##*/}"
@@ -145,6 +176,7 @@ for line in "${RUNNERS[@]}"; do
     EPHEMERAL="$ephemeral" PAT="$pat" \
     RUNNER_LABELS="$labels" RUNNER_GROUP_ID="$group" \
     IDLE_REGENERATION="$idle_regeneration" \
+    RUNNER_IMAGE_FLAVOR="$image" \
         /usr/local/bin/start-runner.sh \
             "$title" "$repo_url" "$token" "$runner_dir" &
     PIDS+=($!)
