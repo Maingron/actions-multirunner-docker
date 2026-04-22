@@ -7,6 +7,8 @@
 #   ./start.sh down                  # stop + remove
 #   ./start.sh logs -f               # tail logs
 #   ./start.sh build                 # just build images
+#   ./start.sh status                # live runner + container dashboard
+#   ./start.sh status --json         # machine-readable (one JSON/runner)
 #   ./start.sh -- <anything>         # raw passthrough after the '--'
 
 set -euo pipefail
@@ -17,6 +19,13 @@ if [[ ! -f config.yml ]]; then
     echo "start: config.yml not found next to start.sh" >&2
     echo "       cp config.example.yml config.yml and edit it" >&2
     exit 1
+fi
+
+# `status` subcommand: render the live dashboard and exit. Skips the
+# render/prune dance so its output stays clean.
+if [[ "${1:-}" == "status" ]]; then
+    shift
+    exec ./docker/status.sh "$@"
 fi
 
 # startup-scripts/ is bind-mounted into every container; make sure it

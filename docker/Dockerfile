@@ -54,6 +54,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/runner-store.sh \
              /usr/local/bin/install-packages.sh \
              /usr/local/bin/parse-config.sh \
+             /usr/local/bin/status.sh \
              /usr/local/bin/diag.sh \
  && chown -R github-runner:github-runner /etc/github-runners
 
