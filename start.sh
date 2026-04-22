@@ -19,6 +19,10 @@ if [[ ! -f config.yml ]]; then
     exit 1
 fi
 
+# startup-scripts/ is bind-mounted into every container; make sure it
+# exists so docker compose doesn't error out on a missing path.
+mkdir -p startup-scripts
+
 # (Re)generate docker/docker-compose.yml from config.yml.
 ./docker/render.sh
 

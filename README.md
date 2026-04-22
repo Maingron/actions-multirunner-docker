@@ -12,6 +12,7 @@ What you interact with:
 config.example.yml    # inventory template; copy to config.yml
 config.yml            # your inventory (gitignored)
 start.sh              # build + run + log tail, all through one script
+startup-scripts/      # per-runner `startup_script:` payloads (apt install, ...)
 README.md
 ```
 
@@ -29,6 +30,7 @@ docker/
     ├── fetch-jitconfig.sh
     ├── delete-runner.sh
     ├── runner-store.sh
+    ├── install-packages.sh   # autodetects apt / dnf / apk / zypper / pacman
     └── diag.sh
 ```
 
@@ -139,6 +141,58 @@ credentials and reconnects automatically if the session drops. Use this if
 you want a fixed pool of always-on runners.
 
 You can freely mix the two modes in the same `config.yml`.
+
+## Installing extra packages
+
+Two knobs, use whichever fits:
+
+### `additional_packages:` — plain list of package names
+
+```yaml
+defaults:
+  additional_packages: [curl, build-essential]
+
+runners:
+  - title: php-builder
+    additional_packages: [php-cli, composer]
+```
+
+The entrypoint autodetects the container's package manager
+(`apt` / `dnf` / `apk` / `zypper` / `pacman`) and installs the union of
+all listed packages once, before any runner starts. Names are
+package-manager-specific — `build-essential` exists on debian/ubuntu but
+not on fedora, so pin runners that need distro-specific names to a
+matching `image:`. Already-installed packages are tracked on the
+`runner-state` volume and skipped on restart.
+
+### `startup_script:` — arbitrary shell logic
+
+```yaml
+runners:
+  - title: node-builder
+    startup_script: install-nodejs.sh
+```
+
+Files live under [`startup-scripts/`](startup-scripts/) at the repo root
+and are bind-mounted read-only at `/etc/github-runners/startup/`. They
+run once per container, as root via `sudo`, before any runner starts.
+Use them when `additional_packages:` isn't enough — downloading binaries,
+writing config files, building from source, enabling repos, etc.
+Duplicate references across runners are deduped; failure aborts startup.
+
+```bash
+#!/usr/bin/env bash
+# startup-scripts/install-nodejs.sh
+set -eux
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends nodejs npm
+rm -rf /var/lib/apt/lists/*
+```
+
+Both mechanisms are idempotent across container restarts via the
+`runner-state` volume; `docker compose down -v` wipes that volume and
+forces a fresh install.
 
 ## Build and run
 

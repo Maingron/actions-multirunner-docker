@@ -39,11 +39,26 @@ export RUNNER_IMAGE_FLAVOR
 # Emit one line per runner, fields separated by ASCII Unit Separator (\x1f)
 # so empty fields (e.g. unset token) are preserved by `read`. Tab cannot be
 # used because bash treats it as whitespace in IFS and collapses runs of it.
-#   title \x1f repo_url \x1f token \x1f workdir \x1f ephemeral \x1f pat \x1f labels \x1f group \x1f idle_regeneration \x1f image
-# token / workdir / pat may be empty; ephemeral is "1" or "0";
-# idle_regeneration is seconds (0 = disabled); image is a flavor name.
+#   title \x1f repo_url \x1f token \x1f workdir \x1f ephemeral \x1f pat \x1f labels \x1f group \x1f idle_regeneration \x1f image \x1f startup_script \x1f additional_packages
+# token / workdir / pat / startup_script / additional_packages may be empty;
+# ephemeral is "1" or "0"; idle_regeneration is seconds (0 = disabled);
+# image is a flavor name; additional_packages is a space-separated list.
 mapfile -t RUNNERS < <(python3 - "$CONFIG_FILE" <<'PY'
 import os, sys, yaml
+
+def as_pkg_list(val):
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [p for p in val.replace(",", " ").split() if p]
+    if isinstance(val, (list, tuple)):
+        out = []
+        for p in val:
+            p = str(p).strip()
+            if p:
+                out.append(p)
+        return out
+    return []
 
 with open(sys.argv[1]) as fh:
     doc = yaml.safe_load(fh) or {}
@@ -55,6 +70,8 @@ default_labels = str(defaults.get("labels", "") or "self-hosted,linux,x64").stri
 default_group = int(defaults.get("runner_group_id", 1) or 1)
 default_idle = int(defaults.get("idle_regeneration", 0) or 0)
 default_image = str(defaults.get("image", "debian:stable-slim") or "debian:stable-slim").strip().lower()
+default_startup = str(defaults.get("startup_script", "") or "").strip()
+default_packages = as_pkg_list(defaults.get("additional_packages"))
 
 for r in doc.get("runners", []) or []:
     title    = str(r["title"]).strip()
@@ -69,6 +86,14 @@ for r in doc.get("runners", []) or []:
     group    = int(r.get("runner_group_id", default_group) or default_group)
     idle     = int(r.get("idle_regeneration", default_idle) or 0)
     image    = str(r.get("image", default_image) or default_image).strip().lower()
+    startup  = str(r.get("startup_script", default_startup) or "").strip()
+    # additional_packages: merge defaults + per-runner, preserve order, dedupe.
+    pkgs = []
+    seen = set()
+    for p in default_packages + as_pkg_list(r.get("additional_packages")):
+        if p not in seen:
+            seen.add(p); pkgs.append(p)
+    pkgs_str = " ".join(pkgs)
 
     if not title or not repo_url:
         sys.exit(f"invalid runner entry (missing title/repo_url): {r!r}")
@@ -81,7 +106,7 @@ for r in doc.get("runners", []) or []:
 
     print("\x1f".join([title, repo_url, token, workdir,
                        "1" if ephemeral else "0", pat, labels, str(group),
-                       str(idle), image]))
+                       str(idle), image, startup, pkgs_str]))
 PY
 )
 
@@ -93,7 +118,7 @@ fi
 # Keep only runners whose image flavor matches this container.
 MATCHED=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img _ _ <<<"$line"
     if [[ "$r_img" == "$RUNNER_IMAGE_FLAVOR" ]]; then
         MATCHED+=("$line")
     fi
@@ -108,7 +133,7 @@ RUNNERS=("${MATCHED[@]}")
 # by this flavor -- sibling containers handle their own.
 declare -A REPO_PAT=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ _ _ <<<"$line"
     [[ -n "$r_pat" ]] && REPO_PAT["$r_url"]="$r_pat"
 done
 
@@ -150,6 +175,94 @@ fi
 
 echo "entrypoint[${RUNNER_IMAGE_FLAVOR}]: starting ${#RUNNERS[@]} runner(s)"
 
+# ---------------------------------------------------------------------------
+# Install `additional_packages` from config.yml.
+#
+# Every runner can list packages to install; we merge the full set across
+# runners (deduped), skip anything already installed in a previous run,
+# and hand the remainder to install-packages.sh -- which autodetects the
+# container's package manager (apt/dnf/apk/zypper/pacman/...).
+#
+# Progress is recorded in $PKGS_DONE_FILE on the `runner-state` volume so
+# container restarts do not re-install what's already there. Wipe the
+# volume (`docker compose down -v`) to force a re-install.
+# ---------------------------------------------------------------------------
+PKGS_DONE_FILE="${PKGS_DONE_FILE:-/var/lib/github-runners/packages.done}"
+touch "$PKGS_DONE_FILE" 2>/dev/null || sudo -n touch "$PKGS_DONE_FILE" || true
+
+declare -A PKG_SEEN=()
+declare -a PKGS_TO_INSTALL=()
+for line in "${RUNNERS[@]}"; do
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ r_pkgs <<<"$line"
+    [[ -z "$r_pkgs" ]] && continue
+    for pkg in $r_pkgs; do
+        [[ -n "${PKG_SEEN[$pkg]:-}" ]] && continue
+        PKG_SEEN["$pkg"]=1
+        if grep -qxF "$pkg" "$PKGS_DONE_FILE" 2>/dev/null; then
+            continue
+        fi
+        PKGS_TO_INSTALL+=("$pkg")
+    done
+done
+
+if (( ${#PKGS_TO_INSTALL[@]} > 0 )); then
+    echo "entrypoint: installing additional_packages: ${PKGS_TO_INSTALL[*]}"
+    if sudo -n /usr/local/bin/install-packages.sh "${PKGS_TO_INSTALL[@]}"; then
+        for pkg in "${PKGS_TO_INSTALL[@]}"; do
+            printf '%s\n' "$pkg" | sudo -n tee -a "$PKGS_DONE_FILE" >/dev/null || \
+                printf '%s\n' "$pkg" >> "$PKGS_DONE_FILE" || true
+        done
+    else
+        echo "entrypoint: additional_packages install failed" >&2
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Run per-runner startup scripts (custom shell logic) once per container.
+#
+# Scripts live under $STARTUP_SCRIPTS_DIR (mounted from ./startup-scripts on
+# the host). Each runner's `startup_script:` names a file in that dir.
+# Duplicates across runners are deduped -- each unique script runs once.
+# Completion is recorded in $STARTUP_DONE_FILE so container restarts don't
+# re-run them.
+#
+# Scripts are executed as root via sudo (see /etc/sudoers.d/github-runner)
+# so they can install packages without the user prepending `sudo` inside
+# the script.
+# ---------------------------------------------------------------------------
+STARTUP_SCRIPTS_DIR="${STARTUP_SCRIPTS_DIR:-/etc/github-runners/startup}"
+STARTUP_DONE_FILE="${STARTUP_DONE_FILE:-/var/lib/github-runners/startup.done}"
+touch "$STARTUP_DONE_FILE" 2>/dev/null || sudo -n touch "$STARTUP_DONE_FILE" || true
+
+declare -A STARTUP_SEEN=()
+for line in "${RUNNERS[@]}"; do
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ r_startup _ <<<"$line"
+    [[ -z "$r_startup" ]] && continue
+    [[ -n "${STARTUP_SEEN[$r_startup]:-}" ]] && continue
+    STARTUP_SEEN["$r_startup"]=1
+
+    script_path="$STARTUP_SCRIPTS_DIR/$r_startup"
+    if [[ ! -f "$script_path" ]]; then
+        echo "entrypoint: startup_script not found: $script_path" >&2
+        echo "entrypoint: create it under ./startup-scripts/ on the host" >&2
+        exit 1
+    fi
+    if grep -qxF "$r_startup" "$STARTUP_DONE_FILE" 2>/dev/null; then
+        echo "entrypoint: startup_script ${r_startup} already applied, skipping"
+        continue
+    fi
+
+    echo "entrypoint: running startup_script ${r_startup}"
+    if sudo -n bash "$script_path"; then
+        printf '%s\n' "$r_startup" | sudo -n tee -a "$STARTUP_DONE_FILE" >/dev/null || \
+            printf '%s\n' "$r_startup" >> "$STARTUP_DONE_FILE" || true
+    else
+        echo "entrypoint: startup_script ${r_startup} failed" >&2
+        exit 1
+    fi
+done
+
 declare -a PIDS=()
 
 shutdown() {
@@ -163,7 +276,7 @@ shutdown() {
 trap shutdown SIGTERM SIGINT
 
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image <<<"$line"
+    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image startup_script additional_packages <<<"$line"
 
     if [[ -z "$workdir" ]]; then
         repo_name="${repo_url##*/}"

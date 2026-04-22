@@ -36,6 +36,20 @@
 #                (or just run `./start.sh`, which does both).
 #                A runner is only launched by the container whose image
 #                matches.
+#   startup_script - optional, filename inside ./startup-scripts/ (repo
+#                    root). Runs once per container, as root via sudo,
+#                    before any runner starts. Use it for custom shell
+#                    logic (fetching binaries, writing config files,
+#                    building from source, ...). Duplicate references
+#                    across runners are deduped. See
+#                    startup-scripts/README.md.
+#   additional_packages - optional list of package names to install via
+#                    the container's native package manager (autodetected:
+#                    apt / dnf / apk / zypper / pacman). Accepts a YAML
+#                    list: ["nodejs", "npm", "php-cli"] or a single
+#                    space/comma-separated string. The union across all
+#                    runners in a container is installed once before
+#                    runners start.
 #
 # `defaults` applies to every runner unless overridden. `pat` can also come
 # from the GITHUB_PAT env var so you never have to put it in the file.
@@ -44,6 +58,8 @@ defaults:
   ephemeral: true
   image: debian:stable-slim
   idle_regeneration: 0                      # 0 = disabled; e.g. 3600 = rotate idle runners every hour
+  # startup_script: common-deps.sh          # runs once per container as root
+  # additional_packages: [curl, build-essential]
   # pat: github_pat_xxxxxxxxxxxxxxxxxxxx    # or set GITHUB_PAT in the environment
 
 runners:
@@ -76,6 +92,8 @@ runners:
     repo_url: https://github.com/your-org/your-repo
     image: ubuntu:24.04
     pat: github_pat_yyyyyyyyyyyyyyyyyyyy
+    startup_script: install-nodejs.sh       # file under ./startup-scripts/
+    additional_packages: [jq, unzip]        # installed via apt/dnf/apk/... autodetected
 
   # Yet another flavor, for jobs that need bookworm specifically.
   - title: bookworm-01

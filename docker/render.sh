@@ -131,6 +131,7 @@ x-runner-base: &runner-base
   pids_limit: -1
   volumes:
     - ../config.yml:/etc/github-runners/config.yml:ro
+    - ../startup-scripts:/etc/github-runners/startup:ro
     - runner-state:/var/lib/github-runners
   tmpfs:
     - /home/github-runner:exec,size=8g,mode=0755,uid=1000,gid=1000

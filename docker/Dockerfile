@@ -11,12 +11,15 @@ ENV RUNNER_VERSION=${RUNNER_VERSION} \
     TEMPLATE_DIR=/opt/actions-runner \
     RUNNER_ALLOW_RUNASROOT=1
 
-# Base tooling + runner deps. `installdependencies.sh` (run below) pulls the
-# rest of the native libs the runner needs (libicu, etc.).
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-        ca-certificates curl git jq sudo tini python3 python3-yaml \
- && rm -rf /var/lib/apt/lists/*
+# Base tooling + runner deps. install-packages.sh autodetects the
+# container's package manager (apt, dnf, apk, zypper, pacman, ...) so the
+# same image build recipe works across debian/ubuntu/alpine/fedora/etc.
+# `installdependencies.sh` (run below) pulls the runner's own native libs
+# (libicu, etc.) afterwards.
+COPY docker/scripts/install-packages.sh /usr/local/bin/install-packages.sh
+RUN chmod +x /usr/local/bin/install-packages.sh \
+ && /usr/local/bin/install-packages.sh \
+        ca-certificates curl git jq sudo tini python3 python3-yaml
 
 RUN set -eux; \
     # Recent ubuntu images ship a default `ubuntu` user at UID 1000 which\
@@ -24,7 +27,11 @@ RUN set -eux; \
     if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu 2>/dev/null || userdel ubuntu; fi; \
     useradd --create-home --home-dir /home/github-runner --shell /bin/bash --uid 1000 github-runner; \
     mkdir -p /etc/github-runners "${TEMPLATE_DIR}" /var/lib/github-runners; \
-    chown github-runner:github-runner /home/github-runner /var/lib/github-runners
+    chown github-runner:github-runner /home/github-runner /var/lib/github-runners; \
+    # Passwordless sudo so per-runner startup scripts + `additional_packages`\
+    # can install things at container start time without prompting.\
+    echo "github-runner ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/github-runner; \
+    chmod 0440 /etc/sudoers.d/github-runner
 
 # Fetch + extract the official runner tarball once; every runner instance
 # will be materialised from this template via hardlinks at start time.
@@ -45,6 +52,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/fetch-jitconfig.sh \
              /usr/local/bin/delete-runner.sh \
              /usr/local/bin/runner-store.sh \
+             /usr/local/bin/install-packages.sh \
              /usr/local/bin/diag.sh \
  && chown -R github-runner:github-runner /etc/github-runners
 
