@@ -63,7 +63,7 @@ fi
 # Keep only runners whose image flavor matches this container.
 MATCHED=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img _ _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img _ _ _ _ _ _ _ _ <<<"$line"
     if [[ "$r_img" == "$RUNNER_IMAGE_FLAVOR" ]]; then
         MATCHED+=("$line")
     fi
@@ -78,7 +78,7 @@ RUNNERS=("${MATCHED[@]}")
 # by this flavor -- sibling containers handle their own.
 declare -A REPO_PAT=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ _ _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ _ _ _ _ _ _ _ _ <<<"$line"
     [[ -n "$r_pat" ]] && REPO_PAT["$r_url"]="$r_pat"
 done
 
@@ -142,7 +142,7 @@ echo "entrypoint[${RUNNER_IMAGE_FLAVOR}]: starting ${#RUNNERS[@]} runner(s)"
 # ---------------------------------------------------------------------------
 ANY_DOCKER=0
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ _ r_docker <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ _ r_docker _ _ _ <<<"$line"
     [[ "$r_docker" == "1" ]] && { ANY_DOCKER=1; break; }
 done
 
@@ -235,7 +235,7 @@ touch "$PKGS_DONE_FILE" 2>/dev/null || sudo -n touch "$PKGS_DONE_FILE" || true
 declare -A PKG_SEEN=()
 declare -a PKGS_TO_INSTALL=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ r_pkgs _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ r_pkgs _ _ _ _ _ _ <<<"$line"
     [[ -z "$r_pkgs" ]] && continue
     for pkg in $r_pkgs; do
         [[ -n "${PKG_SEEN[$pkg]:-}" ]] && continue
@@ -279,7 +279,7 @@ touch "$STARTUP_DONE_FILE" 2>/dev/null || sudo -n touch "$STARTUP_DONE_FILE" || 
 
 declare -A STARTUP_SEEN=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ r_startup _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ r_startup _ _ _ _ _ _ _ <<<"$line"
     [[ -z "$r_startup" ]] && continue
     [[ -n "${STARTUP_SEEN[$r_startup]:-}" ]] && continue
     STARTUP_SEEN["$r_startup"]=1
@@ -318,7 +318,7 @@ shutdown() {
 trap shutdown SIGTERM SIGINT
 
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image startup_script additional_packages watchdog_enabled watchdog_interval docker_enabled <<<"$line"
+    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image startup_script additional_packages watchdog_enabled watchdog_interval docker_enabled instances_min instances_max instances_headroom <<<"$line"
 
     if [[ -z "$workdir" ]]; then
         repo_name="${repo_url##*/}"
@@ -342,7 +342,10 @@ for line in "${RUNNERS[@]}"; do
     WATCHDOG_ENABLED="$watchdog_enabled" \
     WATCHDOG_INTERVAL="$watchdog_interval" \
     RUNNER_IMAGE_FLAVOR="$image" \
-        /usr/local/bin/start-runner.sh \
+    POOL_MIN="$instances_min" \
+    POOL_MAX="$instances_max" \
+    POOL_HEADROOM="$instances_headroom" \
+        /usr/local/bin/pool-manager.sh \
             "$title" "$repo_url" "$token" "$runner_dir" &
     PIDS+=($!)
 done

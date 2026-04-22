@@ -6,6 +6,7 @@
 #     \x1f startup_script \x1f additional_packages
 #     \x1f watchdog_enabled \x1f watchdog_interval
 #     \x1f docker_enabled
+#     \x1f instances_min \x1f instances_max \x1f instances_headroom
 #
 # Also supports --get <dotted.key> to print a single scalar (e.g.
 # `general.autoprune`, `defaults.image`). Prints empty string if missing.
@@ -116,7 +117,8 @@ function merge_pkgs(a, b,    arr, n, i, p, seen, out) {
 }
 
 function emit_item(    title, repo, token, workdir, eph, pat, labels, group,
-                       idle, image, startup, pkgs, wd_en, wd_iv, dk_en) {
+                       idle, image, startup, pkgs, wd_en, wd_iv, dk_en,
+                       in_min, in_max, in_head) {
     title = ("title"    in it) ? it["title"]    : ""
     repo  = ("repo_url" in it) ? it["repo_url"] : ""
     if (title == "" || repo == "") {
@@ -162,6 +164,16 @@ function emit_item(    title, repo, token, workdir, eph, pat, labels, group,
             ? (bool_true(it["docker.enabled"]) ? "1" : "0") \
             : (bool_true(d_docker_enabled) ? "1" : "0")
 
+    # instances.{min,max,headroom} -- pool sizing. Per-runner overrides
+    # defaults. min defaults to 1, max defaults to min, headroom to 0.
+    in_min  = ("instances.min"      in it_set && it["instances.min"]      != "") ? it["instances.min"]      : d_in_min
+    in_max  = ("instances.max"      in it_set && it["instances.max"]      != "") ? it["instances.max"]      : d_in_max
+    in_head = ("instances.headroom" in it_set && it["instances.headroom"] != "") ? it["instances.headroom"] : d_in_headroom
+    if (in_min  == "" || in_min  + 0 < 1) in_min  = "1"
+    if (in_max  == "")                    in_max  = in_min
+    if (in_max  + 0 < in_min + 0)         in_max  = in_min
+    if (in_head == "" || in_head + 0 < 0) in_head = "0"
+
     if (MODE != "runners") return
 
     if (eph == "1" && pat == "") {
@@ -173,9 +185,10 @@ function emit_item(    title, repo, token, workdir, eph, pat, labels, group,
         exit 1
     }
 
-    printf("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n",
+    printf("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n",
            title, repo, token, workdir, eph, pat, labels, group, idle,
-           image, startup, pkgs, wd_en, wd_iv, dk_en)
+           image, startup, pkgs, wd_en, wd_iv, dk_en,
+           in_min, in_max, in_head)
 }
 
 function set_default(key, val) {
@@ -205,6 +218,9 @@ BEGIN {
     d_wd_enabled = "false"
     d_wd_interval = "0"
     d_docker_enabled = "false"
+    d_in_min = "1"
+    d_in_max = ""
+    d_in_headroom = "0"
 
     g_autoprune = "false"
 }
@@ -296,6 +312,18 @@ BEGIN {
                     it["docker.enabled"] = parse_scalar(v)
                     it_set["docker.enabled"] = 1
                 }
+                next
+            }
+            if (pending_scope == "defaults" && pending_key == "instances") {
+                if      (k == "min")      d_in_min      = parse_scalar(v)
+                else if (k == "max")      d_in_max      = parse_scalar(v)
+                else if (k == "headroom") d_in_headroom = parse_scalar(v)
+                next
+            }
+            if (pending_scope == "item" && pending_key == "instances") {
+                if      (k == "min")      { it["instances.min"]      = parse_scalar(v); it_set["instances.min"]      = 1 }
+                else if (k == "max")      { it["instances.max"]      = parse_scalar(v); it_set["instances.max"]      = 1 }
+                else if (k == "headroom") { it["instances.headroom"] = parse_scalar(v); it_set["instances.headroom"] = 1 }
                 next
             }
             # Unknown nested key -- swallow silently to avoid leaking into

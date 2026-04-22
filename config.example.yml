@@ -60,6 +60,38 @@
 #                    containers. The host docker socket is NOT exposed.
 #                    The sidecar runs privileged (unavoidable for in-
 #                    container dockerd); the runner itself does not.
+#   instances      - optional mapping. Spawn a pool of runners from a
+#                    single config entry. All three keys are optional.
+#                      min      - always keep at least this many runners
+#                                 alive (default 1). Floor on the pool
+#                                 size regardless of load.
+#                      max      - hard cap on concurrent runners for
+#                                 this entry (default = min). Scaling
+#                                 will never exceed this.
+#                      headroom - minimum number of IDLE (free) workers
+#                                 to keep ready at all times (default 0).
+#                                 Whenever fewer than `headroom` runners
+#                                 are idle, new ones are spawned up to
+#                                 `max`. Use this to hide spin-up latency
+#                                 for bursty workloads -- jobs always
+#                                 land on a warm, waiting runner.
+#                    Formula: desired = clamp(busy + headroom, min, max).
+#                    In plain English: "keep `headroom` workers free, up
+#                    to `max`, never below `min`".
+#                    Example -- 2 baseline, keep 3 spare, cap at 15:
+#                      instances:
+#                        min: 2
+#                        max: 15
+#                        headroom: 3
+#                    Each instance gets a 2-digit suffix in its title
+#                    and workdir (e.g. `build-01-01`, `build-01-02`, ...)
+#                    so GitHub-side runner names stay unique. When
+#                    min=max=1 the behaviour is unchanged from
+#                    single-instance mode (no suffix is added).
+#                    Dynamic scaling is most useful with ephemeral
+#                    runners; for persistent runners the pool behaves as
+#                    a static fleet of `min` runners unless headroom is
+#                    set.
 #
 # `defaults` applies to every runner unless overridden. `pat` can also come
 # from the GITHUB_PAT env var so you never have to put it in the file.
@@ -132,3 +164,15 @@ runners:
     pat: github_pat_yyyyyyyyyyyyyyyyyyyy
     docker:
       enabled: true
+
+  # Auto-scaling pool: never fewer than 2 runners, always keep 3 idle
+  # ready to pick up a job (so jobs don't wait for a cold spin-up),
+  # never exceed 15 total. Each live instance is named
+  # `pool-runner-01`, `pool-runner-02`, ... on GitHub.
+  - title: pool-runner
+    repo_url: https://github.com/your-org/your-repo
+    pat: github_pat_yyyyyyyyyyyyyyyyyyyy
+    instances:
+      min: 2
+      max: 15
+      headroom: 3

@@ -116,64 +116,115 @@ for line in "${RUNNERS[@]}"; do
     [[ -z "$line" ]] && continue
     IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat \
                        labels group idle_regen image startup_script \
-                       add_pkgs wd_enabled wd_interval docker_enabled <<<"$line"
+                       add_pkgs wd_enabled wd_interval docker_enabled \
+                       instances_min instances_max instances_headroom <<<"$line"
 
     # Only report runners that target this container's image flavor.
     [[ -n "$FLAVOR" && "$image" != "$FLAVOR" ]] && continue
 
     if [[ -z "$workdir" ]]; then
         repo_name="${repo_url##*/}"; repo_name="${repo_name%.git}"
-        workdir="${repo_name}/${title}"
+        # Must mirror the sanitisation in entrypoint.sh exactly --
+        # otherwise runner_dir won't match Runner.Listener's cwd and
+        # every pool instance misclassifies as "starting".
+        safe_title="${title//[^A-Za-z0-9._-]/_}"
+        safe_repo="${repo_name//[^A-Za-z0-9._-]/_}"
+        workdir="${safe_repo}/${safe_title}"
     fi
-    runner_dir="${RUNNERS_BASE}/${workdir}"
+    base_runner_dir="${RUNNERS_BASE}/${workdir}"
 
-    sup_pid="${SUP_BY_TITLE[$title]:-}"
-    listener=false; worker=false
-    any_under "$runner_dir" "${LISTENER_PIDS[@]:-}" && listener=true
-    any_under "$runner_dir" "${WORKER_PIDS[@]:-}"   && worker=true
+    : "${instances_min:=1}"
+    : "${instances_max:=$instances_min}"
+    : "${instances_headroom:=0}"
 
-    api_json='null'
-    eff_pat="${pat:-${GITHUB_PAT:-}}"
-    if [[ -n "$eff_pat" ]]; then
-        api_fetch "$repo_url" "$eff_pat"
-        if [[ "${API_OK[$repo_url]:-0}" == "1" ]]; then
-            body="${API_BODY[$repo_url]}"
-            if [[ "$ephemeral" == "1" ]]; then
-                matches="$(jq -c --arg prefix "${title}-" '
-                    [.runners[]? | select(.name | startswith($prefix)) |
-                     {id, name, status, busy}]' <<<"$body" 2>/dev/null || echo '[]')"
-            else
-                matches="$(jq -c --arg name "$title" '
-                    [.runners[]? | select(.name == $name) |
-                     {id, name, status, busy}]' <<<"$body" 2>/dev/null || echo '[]')"
+    # Determine the set of (instance_title, runner_dir) tuples to emit.
+    # For singleton pools (min=max=1) keep the original title/dir so
+    # existing consumers see no change. For real pools, emit one record
+    # per supervisor whose title matches `<title>-NN`, plus a placeholder
+    # when no instance is currently running.
+    instance_titles=()
+    instance_dirs=()
+    if (( instances_min == 1 && instances_max == 1 )); then
+        instance_titles=("$title")
+        instance_dirs=("$base_runner_dir")
+    else
+        matched=0
+        for t in "${!SUP_BY_TITLE[@]}"; do
+            if [[ "$t" =~ ^${title}-([0-9]+)$ ]]; then
+                idx="${BASH_REMATCH[1]}"
+                instance_titles+=("$t")
+                instance_dirs+=("${base_runner_dir}-${idx}")
+                matched=$((matched + 1))
             fi
-            api_json="$(jq -nc --argjson m "$matches" \
-                '{reachable:true, matches:$m}')"
-        else
-            api_json='{"reachable":false,"matches":[]}'
+        done
+        if (( matched == 0 )); then
+            # No supervisor running yet -- show a single placeholder row
+            # for the pool so the user knows the config entry exists.
+            instance_titles=("$title")
+            instance_dirs=("$base_runner_dir")
         fi
     fi
 
-    jq -nc \
-        --arg title "$title" \
-        --arg repo_url "$repo_url" \
-        --arg workdir "$runner_dir" \
-        --arg labels "$labels" \
-        --arg ephemeral "$ephemeral" \
-        --arg image "$image" \
-        --arg sup_pid "$sup_pid" \
-        --arg wd_enabled "$wd_enabled" \
-        --arg idle_regen "$idle_regen" \
-        --argjson listener "$listener" \
-        --argjson worker "$worker" \
-        --argjson api "$api_json" \
-        '{
-          title:$title, repo_url:$repo_url, workdir:$workdir, labels:$labels,
-          ephemeral:($ephemeral=="1"), image:$image,
-          sup_pid:(if $sup_pid == "" then null else ($sup_pid|tonumber) end),
-          listener:$listener, worker:$worker,
-          watchdog:($wd_enabled=="1"),
-          idle_regeneration:(if $idle_regen == "" then 0 else ($idle_regen|tonumber) end),
-          api:$api
-        }'
+    for i in "${!instance_titles[@]}"; do
+        inst_title="${instance_titles[$i]}"
+        runner_dir="${instance_dirs[$i]}"
+
+        sup_pid="${SUP_BY_TITLE[$inst_title]:-}"
+        listener=false; worker=false
+        any_under "$runner_dir" "${LISTENER_PIDS[@]:-}" && listener=true
+        any_under "$runner_dir" "${WORKER_PIDS[@]:-}"   && worker=true
+
+        api_json='null'
+        eff_pat="${pat:-${GITHUB_PAT:-}}"
+        if [[ -n "$eff_pat" ]]; then
+            api_fetch "$repo_url" "$eff_pat"
+            if [[ "${API_OK[$repo_url]:-0}" == "1" ]]; then
+                body="${API_BODY[$repo_url]}"
+                if [[ "$ephemeral" == "1" ]]; then
+                    matches="$(jq -c --arg prefix "${inst_title}-" '
+                        [.runners[]? | select(.name | startswith($prefix)) |
+                         {id, name, status, busy}]' <<<"$body" 2>/dev/null || echo '[]')"
+                else
+                    matches="$(jq -c --arg name "$inst_title" '
+                        [.runners[]? | select(.name == $name) |
+                         {id, name, status, busy}]' <<<"$body" 2>/dev/null || echo '[]')"
+                fi
+                api_json="$(jq -nc --argjson m "$matches" \
+                    '{reachable:true, matches:$m}')"
+            else
+                api_json='{"reachable":false,"matches":[]}'
+            fi
+        fi
+
+        jq -nc \
+            --arg title "$inst_title" \
+            --arg repo_url "$repo_url" \
+            --arg workdir "$runner_dir" \
+            --arg labels "$labels" \
+            --arg ephemeral "$ephemeral" \
+            --arg image "$image" \
+            --arg sup_pid "$sup_pid" \
+            --arg wd_enabled "$wd_enabled" \
+            --arg idle_regen "$idle_regen" \
+            --arg pool_min "$instances_min" \
+            --arg pool_max "$instances_max" \
+            --arg pool_headroom "$instances_headroom" \
+            --argjson listener "$listener" \
+            --argjson worker "$worker" \
+            --argjson api "$api_json" \
+            '{
+              title:$title, repo_url:$repo_url, workdir:$workdir, labels:$labels,
+              ephemeral:($ephemeral=="1"), image:$image,
+              sup_pid:(if $sup_pid == "" then null else ($sup_pid|tonumber) end),
+              listener:$listener, worker:$worker,
+              watchdog:($wd_enabled=="1"),
+              idle_regeneration:(if $idle_regen == "" then 0 else ($idle_regen|tonumber) end),
+              pool:{
+                min:($pool_min|tonumber),
+                max:($pool_max|tonumber),
+                headroom:($pool_headroom|tonumber)
+              },
+              api:$api
+            }'
+    done
 done

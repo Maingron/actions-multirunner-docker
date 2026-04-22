@@ -48,6 +48,7 @@ COPY docker/scripts/    /usr/local/bin/
 COPY config.example.yml /etc/github-runners/config.yml
 RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/start-runner.sh \
+             /usr/local/bin/pool-manager.sh \
              /usr/local/bin/fetch-token.sh \
              /usr/local/bin/fetch-jitconfig.sh \
              /usr/local/bin/delete-runner.sh \
