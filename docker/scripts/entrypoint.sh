@@ -43,10 +43,11 @@ export RUNNER_IMAGE_FLAVOR
 #       \x1f labels \x1f group \x1f idle_regeneration \x1f image
 #       \x1f startup_script \x1f additional_packages
 #       \x1f watchdog_enabled \x1f watchdog_interval
+#       \x1f docker_enabled
 # token / workdir / pat / startup_script / additional_packages may be empty;
-# ephemeral / watchdog_enabled are "1" or "0"; idle_regeneration and
-# watchdog_interval are seconds (0 = disabled); image is a flavor name;
-# additional_packages is a space-separated list.
+# ephemeral / watchdog_enabled / docker_enabled are "1" or "0";
+# idle_regeneration and watchdog_interval are seconds (0 = disabled);
+# image is a flavor name; additional_packages is a space-separated list.
 RUNNERS=()
 while IFS= read -r __runner_line; do
     [[ -z "$__runner_line" ]] && continue
@@ -62,7 +63,7 @@ fi
 # Keep only runners whose image flavor matches this container.
 MATCHED=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img _ _ _ _ _ <<<"$line"
     if [[ "$r_img" == "$RUNNER_IMAGE_FLAVOR" ]]; then
         MATCHED+=("$line")
     fi
@@ -77,7 +78,7 @@ RUNNERS=("${MATCHED[@]}")
 # by this flavor -- sibling containers handle their own.
 declare -A REPO_PAT=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ _ _ _ _ _ <<<"$line"
     [[ -n "$r_pat" ]] && REPO_PAT["$r_url"]="$r_pat"
 done
 
@@ -120,6 +121,103 @@ fi
 echo "entrypoint[${RUNNER_IMAGE_FLAVOR}]: starting ${#RUNNERS[@]} runner(s)"
 
 # ---------------------------------------------------------------------------
+# Docker-in-Docker (isolated sidecar).
+#
+# Any runner with `docker.enabled: true` opts the service into talking to
+# a dedicated `docker:dind` sidecar (rendered by render.sh). The runner
+# talks to it via DOCKER_HOST=tcp://dind-<slug>:2375 on a private compose
+# network -- the runner container is NOT given access to the host's
+# docker socket, so jobs can neither see nor control containers that
+# belong to the host or to sibling services. Each image group gets its
+# own DinD daemon + /var/lib/docker volume, so containers and images
+# spawned by one group are invisible to every other group.
+#
+# At runtime we only need to:
+#   1. Install the `docker` CLI if it isn't already in the image.
+#      We fetch the distro-independent static binary from download.docker.com
+#      so this works on debian / ubuntu / alpine / fedora / etc. with no
+#      extra repo setup.
+#   2. Wait for the DinD daemon to come up (compose's health check covers
+#      the first start; this handles restart races).
+# ---------------------------------------------------------------------------
+ANY_DOCKER=0
+for line in "${RUNNERS[@]}"; do
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ _ r_docker <<<"$line"
+    [[ "$r_docker" == "1" ]] && { ANY_DOCKER=1; break; }
+done
+
+if (( ANY_DOCKER == 1 )); then
+    if [[ -z "${DOCKER_HOST:-}" ]]; then
+        echo "entrypoint: docker.enabled=true but DOCKER_HOST is not set." >&2
+        echo "entrypoint: re-run ./render.sh + ./start.sh so the compose file is regenerated with the DinD sidecar." >&2
+        exit 1
+    fi
+
+    # If TLS is expected (standard case: mTLS to the DinD sidecar), wait
+    # for the client cert material to appear. The sidecar's unix-socket
+    # healthcheck can flip to healthy before the client cert has finished
+    # being written to the shared volume, so we can't rely solely on
+    # depends_on here.
+    if [[ "${DOCKER_TLS_VERIFY:-}" == "1" && -n "${DOCKER_CERT_PATH:-}" ]]; then
+        echo "entrypoint: waiting for DinD TLS client certs at ${DOCKER_CERT_PATH}"
+        for i in $(seq 1 60); do
+            if [[ -r "${DOCKER_CERT_PATH}/ca.pem" \
+               && -r "${DOCKER_CERT_PATH}/cert.pem" \
+               && -r "${DOCKER_CERT_PATH}/key.pem" ]]; then
+                break
+            fi
+            sleep 1
+        done
+        if [[ ! -r "${DOCKER_CERT_PATH}/cert.pem" ]]; then
+            echo "entrypoint: TLS client certs did not appear at ${DOCKER_CERT_PATH} within 60s" >&2
+            exit 1
+        fi
+    fi
+
+    if ! command -v docker >/dev/null 2>&1; then
+        DOCKER_CLI_VERSION="${DOCKER_CLI_VERSION:-27.3.1}"
+        DOCKER_CLI_ARCH="$(uname -m)"
+        case "$DOCKER_CLI_ARCH" in
+            x86_64)  dl_arch="x86_64" ;;
+            aarch64) dl_arch="aarch64" ;;
+            armv7l)  dl_arch="armhf" ;;
+            *) echo "entrypoint: unsupported arch for docker static binary: $DOCKER_CLI_ARCH" >&2; exit 1 ;;
+        esac
+        url="https://download.docker.com/linux/static/stable/${dl_arch}/docker-${DOCKER_CLI_VERSION}.tgz"
+        echo "entrypoint: installing docker CLI ${DOCKER_CLI_VERSION} (${dl_arch}) from ${url}"
+        tmp_dir="$(mktemp -d)"
+        if ! curl -fsSL -o "${tmp_dir}/docker.tgz" "$url"; then
+            echo "entrypoint: failed to download docker CLI tarball" >&2
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+        tar -xzf "${tmp_dir}/docker.tgz" -C "$tmp_dir"
+        for bin in docker; do
+            if [[ -f "${tmp_dir}/docker/${bin}" ]]; then
+                sudo -n install -m 0755 "${tmp_dir}/docker/${bin}" "/usr/local/bin/${bin}"
+            fi
+        done
+        rm -rf "$tmp_dir"
+    fi
+
+    # Wait for the sidecar dockerd to accept connections. compose's
+    # healthcheck + depends_on handle cold starts, but during sidecar
+    # restarts the runner survives and we need to block until it's back.
+    echo "entrypoint: waiting for DinD daemon at ${DOCKER_HOST}"
+    for i in $(seq 1 60); do
+        if docker version >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+    if ! docker version >/dev/null 2>&1; then
+        echo "entrypoint: DinD sidecar at ${DOCKER_HOST} did not become ready in 60s." >&2
+        exit 1
+    fi
+    echo "entrypoint: docker CLI ready, $(docker --version), daemon at ${DOCKER_HOST}"
+fi
+
+# ---------------------------------------------------------------------------
 # Install `additional_packages` from config.yml.
 #
 # Every runner can list packages to install; we merge the full set across
@@ -137,7 +235,7 @@ touch "$PKGS_DONE_FILE" 2>/dev/null || sudo -n touch "$PKGS_DONE_FILE" || true
 declare -A PKG_SEEN=()
 declare -a PKGS_TO_INSTALL=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ r_pkgs _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ r_pkgs _ _ _ <<<"$line"
     [[ -z "$r_pkgs" ]] && continue
     for pkg in $r_pkgs; do
         [[ -n "${PKG_SEEN[$pkg]:-}" ]] && continue
@@ -181,7 +279,7 @@ touch "$STARTUP_DONE_FILE" 2>/dev/null || sudo -n touch "$STARTUP_DONE_FILE" || 
 
 declare -A STARTUP_SEEN=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ r_startup _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ r_startup _ _ _ _ <<<"$line"
     [[ -z "$r_startup" ]] && continue
     [[ -n "${STARTUP_SEEN[$r_startup]:-}" ]] && continue
     STARTUP_SEEN["$r_startup"]=1
@@ -220,7 +318,7 @@ shutdown() {
 trap shutdown SIGTERM SIGINT
 
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image startup_script additional_packages watchdog_enabled watchdog_interval <<<"$line"
+    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image startup_script additional_packages watchdog_enabled watchdog_interval docker_enabled <<<"$line"
 
     if [[ -z "$workdir" ]]; then
         repo_name="${repo_url##*/}"

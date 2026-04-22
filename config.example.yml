@@ -50,6 +50,16 @@
 #                    space/comma-separated string. The union across all
 #                    runners in a container is installed once before
 #                    runners start.
+#   docker         - optional mapping. Set `docker.enabled: true` to let
+#                    jobs on this runner use `docker` / `docker compose`
+#                    (builds, testcontainers, ...). Each image group that
+#                    has at least one docker-enabled runner gets its OWN
+#                    `docker:dind` sidecar on a private compose network,
+#                    so jobs see only containers they themselves spawn --
+#                    never the host's containers, never sibling groups'
+#                    containers. The host docker socket is NOT exposed.
+#                    The sidecar runs privileged (unavoidable for in-
+#                    container dockerd); the runner itself does not.
 #
 # `defaults` applies to every runner unless overridden. `pat` can also come
 # from the GITHUB_PAT env var so you never have to put it in the file.
@@ -110,3 +120,15 @@ runners:
     repo_url: https://github.com/your-org/your-repo
     image: debian:bookworm
     pat: github_pat_yyyyyyyyyyyyyyyyyyyy
+
+  # Runner that needs access to `docker` inside its jobs (docker build,
+  # docker run, testcontainers, ...). The host docker socket is
+  # bind-mounted into the container; the docker CLI is installed at
+  # container start. All runners that share this `image:` inherit the
+  # socket mount (docker grouping is per compose-service).
+  - title: docker-runner-01
+    repo_url: https://github.com/your-org/your-repo
+    image: debian:stable-slim
+    pat: github_pat_yyyyyyyyyyyyyyyyyyyy
+    docker:
+      enabled: true

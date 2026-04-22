@@ -194,6 +194,83 @@ Both mechanisms are idempotent across container restarts via the
 `runner-state` volume; `docker compose down -v` wipes that volume and
 forces a fresh install.
 
+## Docker access inside jobs
+
+Some jobs need to run `docker build`, `docker run`, or tooling like
+Testcontainers. Opt in per-runner:
+
+```yaml
+runners:
+  - title: docker-runner-01
+    repo_url: https://github.com/your-org/your-repo
+    image: debian:stable-slim
+    pat: ghp_yyyy
+    docker:
+      enabled: true
+```
+
+What this does:
+
+- `render.sh` groups runners by `image:`. For every image group that has
+  **at least one** runner with `docker.enabled: true`, it emits a
+  dedicated `docker:dind` sidecar service (e.g. `dind-debian-stable-slim`)
+  on a private compose network shared **only** with that runner service.
+- The runner container gets
+  `DOCKER_HOST=tcp://dind-<slug>:2375` and `depends_on` the sidecar's
+  health check, so the runner won't start handing out jobs until the
+  daemon answers.
+- `entrypoint.sh` installs the `docker` CLI from the distro-independent
+  static tarball (`download.docker.com`) if it isn't already present.
+
+Isolation properties:
+
+- **The host dockerd is never exposed to the container.** No
+  `/var/run/docker.sock` bind mount, no `--privileged` on the runner, no
+  `group_add`. Breaking out of a job does not grant host root.
+- **Containers spawned by one image group are invisible to every other
+  group.** Each DinD sidecar has its own `/var/lib/docker` volume and its
+  own network namespace; `docker ps` inside a job lists only the
+  containers that job's DinD created.
+- **mTLS between runner and DinD.** The `docker:dind` image
+  auto-generates a CA + server key + client key on first boot into a
+  shared volume; the daemon listens on 2376 and refuses any connection
+  without a valid client cert. Even an attacker who somehow lands on the
+  private compose network without the cert cannot issue API calls.
+- **The DinD sidecar inherits no secrets.** `GITHUB_PAT` is only set on
+  the runner service -- the sidecar's environment is empty except for
+  `DOCKER_TLS_CERTDIR`.
+- **Per-group private network.** Each sidecar sits on its own
+  `dind-<slug>` bridge; the default compose network isn't attached to
+  any DinD. A runner cannot reach another group's DinD even by IP.
+- **Reduced kernel attack surface on the runner.** `cap_drop: [NET_RAW]`
+  blocks raw-socket / ARP-spoofing tricks; `no-new-privileges` is
+  explicitly declared (kept false only because the runner uses `sudo`
+  for package installs -- disable `sudo` and flip it to true if your
+  workflows don't install packages at runtime).
+- **The DinD sidecar runs with `privileged: true`** — unavoidable for
+  any in-container dockerd that needs cgroups, iptables and loop
+  devices. The privilege stays *inside* the sidecar; the runner
+  container remains unprivileged. If you want to eliminate this, swap
+  the sidecar image for `docker:dind-rootless` and tune host sysctls
+  (`kernel.unprivileged_userns_clone=1`,
+  `kernel.apparmor_restrict_unprivileged_userns=0` on Ubuntu ≥ 23.10).
+- **No host bind mounts into DinD.** Only named volumes
+  (`docker_dind-<slug>-data`, `docker_dind-<slug>-certs`), which compose
+  scopes to the project.
+
+Trade-offs vs. host-socket pass-through:
+
+- DinD pulls/builds don't share the host's image cache -- each group
+  re-pulls its base images on first use. That's the price of isolation;
+  a persistent named volume (`docker_dind-<slug>-data`) keeps the cache
+  warm across restarts.
+- `privileged: true` is required on the sidecar. If your host forbids
+  privileged containers, DinD won't work and you need a different
+  approach (e.g. Kaniko for builds, remote BuildKit, or sysbox).
+
+If an image group has *no* runner with `docker.enabled: true`, no
+sidecar is rendered and that service has no docker at all.
+
 ## Build and run
 
 ```sh

@@ -5,6 +5,7 @@
 #     \x1f labels \x1f runner_group_id \x1f idle_regeneration \x1f image
 #     \x1f startup_script \x1f additional_packages
 #     \x1f watchdog_enabled \x1f watchdog_interval
+#     \x1f docker_enabled
 #
 # Also supports --get <dotted.key> to print a single scalar (e.g.
 # `general.autoprune`, `defaults.image`). Prints empty string if missing.
@@ -115,7 +116,7 @@ function merge_pkgs(a, b,    arr, n, i, p, seen, out) {
 }
 
 function emit_item(    title, repo, token, workdir, eph, pat, labels, group,
-                       idle, image, startup, pkgs, wd_en, wd_iv) {
+                       idle, image, startup, pkgs, wd_en, wd_iv, dk_en) {
     title = ("title"    in it) ? it["title"]    : ""
     repo  = ("repo_url" in it) ? it["repo_url"] : ""
     if (title == "" || repo == "") {
@@ -156,6 +157,11 @@ function emit_item(    title, repo, token, workdir, eph, pat, labels, group,
             ? it["watchdog.interval"] : d_wd_interval
     if (wd_iv == "") wd_iv = "0"
 
+    # docker.enabled (per-runner overrides defaults).
+    dk_en = ("docker.enabled" in it_set) \
+            ? (bool_true(it["docker.enabled"]) ? "1" : "0") \
+            : (bool_true(d_docker_enabled) ? "1" : "0")
+
     if (MODE != "runners") return
 
     if (eph == "1" && pat == "") {
@@ -167,9 +173,9 @@ function emit_item(    title, repo, token, workdir, eph, pat, labels, group,
         exit 1
     }
 
-    printf("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n",
+    printf("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n",
            title, repo, token, workdir, eph, pat, labels, group, idle,
-           image, startup, pkgs, wd_en, wd_iv)
+           image, startup, pkgs, wd_en, wd_iv, dk_en)
 }
 
 function set_default(key, val) {
@@ -198,6 +204,7 @@ BEGIN {
     d_packages = ""
     d_wd_enabled = "false"
     d_wd_interval = "0"
+    d_docker_enabled = "false"
 
     g_autoprune = "false"
 }
@@ -278,6 +285,17 @@ BEGIN {
             if (pending_scope == "item" && pending_key == "watchdog") {
                 if      (k == "enabled")  { it["watchdog.enabled"]  = parse_scalar(v); it_set["watchdog.enabled"]  = 1 }
                 else if (k == "interval") { it["watchdog.interval"] = parse_scalar(v); it_set["watchdog.interval"] = 1 }
+                next
+            }
+            if (pending_scope == "defaults" && pending_key == "docker") {
+                if (k == "enabled") d_docker_enabled = parse_scalar(v)
+                next
+            }
+            if (pending_scope == "item" && pending_key == "docker") {
+                if (k == "enabled") {
+                    it["docker.enabled"] = parse_scalar(v)
+                    it_set["docker.enabled"] = 1
+                }
                 next
             }
             # Unknown nested key -- swallow silently to avoid leaking into
