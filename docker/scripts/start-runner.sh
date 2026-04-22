@@ -42,6 +42,20 @@ RUNNER_GROUP_ID="${RUNNER_GROUP_ID:-1}"
 IDLE_REGENERATION="${IDLE_REGENERATION:-0}"
 IDLE_POLL_INTERVAL="${IDLE_POLL_INTERVAL:-10}"
 
+# Liveness watchdog. If enabled, polls every WATCHDOG_INTERVAL seconds and
+# kills run.sh (forcing a clean restart via the outer loop) when run.sh has
+# no live descendant processes -- i.e. the wrapper is alive but the Listener
+# (and any Workers) have vanished, so the runner is wedged and no progress
+# will ever happen. Only triggers after WATCHDOG_GRACE seconds of startup
+# slack, and only on WATCHDOG_MISSES consecutive failed checks (to avoid
+# racing with the tiny window between job completion and process teardown).
+# Independent of IDLE_REGENERATION (which rotates *healthy* idle runners);
+# the two can coexist.
+WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
+WATCHDOG_INTERVAL="${WATCHDOG_INTERVAL:-0}"
+WATCHDOG_GRACE="${WATCHDOG_GRACE:-60}"
+WATCHDOG_MISSES="${WATCHDOG_MISSES:-2}"
+
 log() { printf '[%s] %s\n' "$title" "$*"; }
 
 # True iff a Runner.Worker process is currently running for this runner_dir.
@@ -54,6 +68,20 @@ worker_active() {
         if [[ "$cwd" == "$runner_dir" || "$cwd" == "$runner_dir"/* ]]; then
             return 0
         fi
+    done
+    return 1
+}
+
+# True iff $1 (a pid) has at least one live child process. Simpler and more
+# robust than matching on specific comm names: Runner.Listener is exactly
+# 15 chars (the kernel's comm cap), and on some runner versions it is
+# spawned via runsvc.sh / a dotnet shim instead of directly. If run.sh
+# has zero children, it is wedged regardless of which flavor it is.
+has_children() {
+    local root="$1" pid ppid
+    for status_file in /proc/[0-9]*/status; do
+        ppid="$(awk '/^PPid:/{print $2; exit}' "$status_file" 2>/dev/null || true)"
+        [[ "$ppid" == "$root" ]] && return 0
     done
     return 1
 }
@@ -154,7 +182,7 @@ if [[ "$EPHEMERAL" == "1" ]]; then
 
         # Optional idle watchdog: rotate a runner that's been waiting for a
         # job for too long. Resets whenever a Runner.Worker is seen.
-        WATCHDOG_PID=""
+        IDLE_WATCHDOG_PID=""
         if (( IDLE_REGENERATION > 0 )); then
             (
                 last_active=$(date +%s)
@@ -171,16 +199,48 @@ if [[ "$EPHEMERAL" == "1" ]]; then
                     sleep "$IDLE_POLL_INTERVAL"
                 done
             ) &
-            WATCHDOG_PID=$!
+            IDLE_WATCHDOG_PID=$!
+        fi
+
+        # Liveness watchdog: kill run.sh if it has no live children for
+        # WATCHDOG_MISSES consecutive polls (after WATCHDOG_GRACE startup
+        # slack). run.sh spawns runsvc.sh/Runner.Listener immediately, so
+        # a childless run.sh past the grace window is genuinely wedged.
+        LIVE_WATCHDOG_PID=""
+        if [[ "$WATCHDOG_ENABLED" == "1" ]] && (( WATCHDOG_INTERVAL > 0 )); then
+            (
+                start_ts=$(date +%s)
+                misses=0
+                while kill -0 "$RUN_PID" 2>/dev/null; do
+                    sleep "$WATCHDOG_INTERVAL"
+                    kill -0 "$RUN_PID" 2>/dev/null || exit 0
+                    now=$(date +%s)
+                    if (( now - start_ts < WATCHDOG_GRACE )); then
+                        continue
+                    fi
+                    if has_children "$RUN_PID" || worker_active; then
+                        misses=0
+                        continue
+                    fi
+                    misses=$((misses + 1))
+                    if (( misses >= WATCHDOG_MISSES )); then
+                        log "watchdog: run.sh has no children for $((misses * WATCHDOG_INTERVAL))s, restarting"
+                        kill -TERM "$RUN_PID" 2>/dev/null || true
+                        exit 0
+                    fi
+                done
+            ) &
+            LIVE_WATCHDOG_PID=$!
         fi
 
         wait "$RUN_PID" || true
         unset RUN_PID
-        if [[ -n "$WATCHDOG_PID" ]]; then
-            kill "$WATCHDOG_PID" 2>/dev/null || true
-            wait "$WATCHDOG_PID" 2>/dev/null || true
-            WATCHDOG_PID=""
-        fi
+        for wpid in "$IDLE_WATCHDOG_PID" "$LIVE_WATCHDOG_PID"; do
+            [[ -n "$wpid" ]] || continue
+            kill "$wpid" 2>/dev/null || true
+            wait "$wpid" 2>/dev/null || true
+        done
+        IDLE_WATCHDOG_PID=""; LIVE_WATCHDOG_PID=""
 
         # Always best-effort deregister. If a job completed the runner is
         # already gone server-side (delete-runner.sh treats 404 as success);
@@ -229,8 +289,41 @@ else
         log "running (persistent)"
         ./run.sh &
         RUN_PID=$!
+
+        LIVE_WATCHDOG_PID=""
+        if [[ "$WATCHDOG_ENABLED" == "1" ]] && (( WATCHDOG_INTERVAL > 0 )); then
+            (
+                start_ts=$(date +%s)
+                misses=0
+                while kill -0 "$RUN_PID" 2>/dev/null; do
+                    sleep "$WATCHDOG_INTERVAL"
+                    kill -0 "$RUN_PID" 2>/dev/null || exit 0
+                    now=$(date +%s)
+                    if (( now - start_ts < WATCHDOG_GRACE )); then
+                        continue
+                    fi
+                    if has_children "$RUN_PID" || worker_active; then
+                        misses=0
+                        continue
+                    fi
+                    misses=$((misses + 1))
+                    if (( misses >= WATCHDOG_MISSES )); then
+                        log "watchdog: run.sh has no children for $((misses * WATCHDOG_INTERVAL))s, restarting"
+                        kill -TERM "$RUN_PID" 2>/dev/null || true
+                        exit 0
+                    fi
+                done
+            ) &
+            LIVE_WATCHDOG_PID=$!
+        fi
+
         wait "$RUN_PID" || true
         unset RUN_PID
+        if [[ -n "$LIVE_WATCHDOG_PID" ]]; then
+            kill "$LIVE_WATCHDOG_PID" 2>/dev/null || true
+            wait "$LIVE_WATCHDOG_PID" 2>/dev/null || true
+            LIVE_WATCHDOG_PID=""
+        fi
         log "run.sh exited; restarting in ${RESTART_DELAY}s"
         sleep "$RESTART_DELAY"
     done

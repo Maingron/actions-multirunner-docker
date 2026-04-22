@@ -101,6 +101,9 @@ runners:
     pat: github_pat_yyyyyyyyyyyyyyyyyyyy
     startup_script: install-nodejs.sh       # file under ./startup-scripts/
     additional_packages: [jq, unzip]        # installed via apt/dnf/apk/... autodetected
+    watchdog:
+      enabled: true
+      interval: 60
 
   # Yet another flavor, for jobs that need bookworm specifically.
   - title: bookworm-01

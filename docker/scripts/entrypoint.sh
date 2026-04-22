@@ -39,10 +39,14 @@ export RUNNER_IMAGE_FLAVOR
 # Emit one line per runner, fields separated by ASCII Unit Separator (\x1f)
 # so empty fields (e.g. unset token) are preserved by `read`. Tab cannot be
 # used because bash treats it as whitespace in IFS and collapses runs of it.
-#   title \x1f repo_url \x1f token \x1f workdir \x1f ephemeral \x1f pat \x1f labels \x1f group \x1f idle_regeneration \x1f image \x1f startup_script \x1f additional_packages
+#   title \x1f repo_url \x1f token \x1f workdir \x1f ephemeral \x1f pat
+#       \x1f labels \x1f group \x1f idle_regeneration \x1f image
+#       \x1f startup_script \x1f additional_packages
+#       \x1f watchdog_enabled \x1f watchdog_interval
 # token / workdir / pat / startup_script / additional_packages may be empty;
-# ephemeral is "1" or "0"; idle_regeneration is seconds (0 = disabled);
-# image is a flavor name; additional_packages is a space-separated list.
+# ephemeral / watchdog_enabled are "1" or "0"; idle_regeneration and
+# watchdog_interval are seconds (0 = disabled); image is a flavor name;
+# additional_packages is a space-separated list.
 RUNNERS=()
 while IFS= read -r __runner_line; do
     [[ -z "$__runner_line" ]] && continue
@@ -58,7 +62,7 @@ fi
 # Keep only runners whose image flavor matches this container.
 MATCHED=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img _ _ _ _ <<<"$line"
     if [[ "$r_img" == "$RUNNER_IMAGE_FLAVOR" ]]; then
         MATCHED+=("$line")
     fi
@@ -73,7 +77,7 @@ RUNNERS=("${MATCHED[@]}")
 # by this flavor -- sibling containers handle their own.
 declare -A REPO_PAT=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ _ _ _ _ <<<"$line"
     [[ -n "$r_pat" ]] && REPO_PAT["$r_url"]="$r_pat"
 done
 
@@ -133,7 +137,7 @@ touch "$PKGS_DONE_FILE" 2>/dev/null || sudo -n touch "$PKGS_DONE_FILE" || true
 declare -A PKG_SEEN=()
 declare -a PKGS_TO_INSTALL=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ r_pkgs <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ r_pkgs _ _ <<<"$line"
     [[ -z "$r_pkgs" ]] && continue
     for pkg in $r_pkgs; do
         [[ -n "${PKG_SEEN[$pkg]:-}" ]] && continue
@@ -177,7 +181,7 @@ touch "$STARTUP_DONE_FILE" 2>/dev/null || sudo -n touch "$STARTUP_DONE_FILE" || 
 
 declare -A STARTUP_SEEN=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ r_startup _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ r_startup _ _ _ <<<"$line"
     [[ -z "$r_startup" ]] && continue
     [[ -n "${STARTUP_SEEN[$r_startup]:-}" ]] && continue
     STARTUP_SEEN["$r_startup"]=1
@@ -216,7 +220,7 @@ shutdown() {
 trap shutdown SIGTERM SIGINT
 
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image startup_script additional_packages <<<"$line"
+    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image startup_script additional_packages watchdog_enabled watchdog_interval <<<"$line"
 
     if [[ -z "$workdir" ]]; then
         repo_name="${repo_url##*/}"
@@ -229,6 +233,8 @@ for line in "${RUNNERS[@]}"; do
     EPHEMERAL="$ephemeral" PAT="$pat" \
     RUNNER_LABELS="$labels" RUNNER_GROUP_ID="$group" \
     IDLE_REGENERATION="$idle_regeneration" \
+    WATCHDOG_ENABLED="$watchdog_enabled" \
+    WATCHDOG_INTERVAL="$watchdog_interval" \
     RUNNER_IMAGE_FLAVOR="$image" \
         /usr/local/bin/start-runner.sh \
             "$title" "$repo_url" "$token" "$runner_dir" &
