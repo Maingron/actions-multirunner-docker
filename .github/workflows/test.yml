@@ -9,21 +9,47 @@ jobs:
     steps:
       - name: Say hello from bash
         run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
-
+      - name: Compute Primes
+        run: bash -c "echo \"Computing primes\" && seq 2 100000000 | factor | awk 'NF==2{print \$1}'"
   test2:
     runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
     steps:
       - name: Say hello from bash
         run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
-
+      - name: Compute Primes
+        run: bash -c "echo \"Computing primes\" && seq 2 100000000 | factor | awk 'NF==2{print \$1}'"
   test3:
     runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
     steps:
       - name: Say hello from bash
         run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
-  
+      - name: Compute Primes
+        run: bash -c "echo \"Computing primes\" && seq 2 100000000 | factor | awk 'NF==2{print \$1}'"
   test4:
     runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
     steps:
       - name: Say hello from bash
         run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
+      - name: Compute Primes
+        run: bash -c "echo \"Computing primes\" && seq 2 100000000 | factor | awk 'NF==2{print \$1}'"
+  test5:
+    runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
+    steps:
+      - name: Say hello from bash
+        run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
+      - name: Compute Primes
+        run: bash -c "echo \"Computing primes\" && seq 2 100000000 | factor | awk 'NF==2{print \$1}'"
+  test6:
+    runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
+    steps:
+      - name: Say hello from bash
+        run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
+      - name: Compute Primes
+        run: bash -c "echo \"Computing primes\" && seq 2 100000000 | factor | awk 'NF==2{print \$1}'"
+  test7:
+    runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
+    steps:
+      - name: Say hello from bash
+        run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
+      - name: Compute Primes
+        run: bash -c "echo \"Computing primes\" && seq 2 100000000 | factor | awk 'NF==2{print \$1}'"
