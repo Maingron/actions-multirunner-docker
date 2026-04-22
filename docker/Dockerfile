@@ -37,14 +37,8 @@ RUN set -eux; \
     ./bin/installdependencies.sh; \
     chown -R github-runner:github-runner "${TEMPLATE_DIR}"
 
-COPY entrypoint.sh       /usr/local/bin/entrypoint.sh
-COPY start-runner.sh     /usr/local/bin/start-runner.sh
-COPY fetch-token.sh      /usr/local/bin/fetch-token.sh
-COPY fetch-jitconfig.sh  /usr/local/bin/fetch-jitconfig.sh
-COPY delete-runner.sh    /usr/local/bin/delete-runner.sh
-COPY runner-store.sh     /usr/local/bin/runner-store.sh
-COPY diag.sh             /usr/local/bin/diag.sh
-COPY config.example.yml  /etc/github-runners/config.yml
+COPY docker/scripts/    /usr/local/bin/
+COPY config.example.yml /etc/github-runners/config.yml
 RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/start-runner.sh \
              /usr/local/bin/fetch-token.sh \

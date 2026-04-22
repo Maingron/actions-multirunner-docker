@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Streamlined entry point: render docker-compose.yml from config.yml and
-# hand control to `docker compose`. Extra args pass through.
+# User-facing entry point. Everything else (Dockerfile, compose template,
+# helper scripts) lives under ./docker/ and is treated as build internals.
 #
 #   ./start.sh                       # up --build, follows logs
 #   ./start.sh up -d                 # detached
@@ -19,7 +19,8 @@ if [[ ! -f config.yml ]]; then
     exit 1
 fi
 
-./render.sh
+# (Re)generate docker/docker-compose.yml from config.yml.
+./docker/render.sh
 
 # Default action: up --build with attached logs.
 if [[ $# -eq 0 ]]; then
@@ -28,4 +29,5 @@ elif [[ "${1:-}" == "--" ]]; then
     shift
 fi
 
+cd docker
 exec docker compose "$@"

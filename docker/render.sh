@@ -12,7 +12,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-CONFIG_FILE="${CONFIG_FILE:-config.yml}"
+# config.yml lives at the repo root (one level up); docker-compose.yml is
+# written next to this script so `docker compose` sees it as the project.
+CONFIG_FILE="${CONFIG_FILE:-../config.yml}"
 OUTPUT_FILE="${OUTPUT_FILE:-docker-compose.yml}"
 RUNNER_VERSION="${RUNNER_VERSION:-2.334.0}"
 DEFAULT_IMAGE="${DEFAULT_IMAGE:-debian:stable-slim}"
@@ -128,7 +130,7 @@ x-runner-base: &runner-base
     nproc: 1048576
   pids_limit: -1
   volumes:
-    - ./config.yml:/etc/github-runners/config.yml:ro
+    - ../config.yml:/etc/github-runners/config.yml:ro
     - runner-state:/var/lib/github-runners
   tmpfs:
     - /home/github-runner:exec,size=8g,mode=0755,uid=1000,gid=1000
@@ -143,7 +145,8 @@ EOF
   runners-${tag}:
     <<: *runner-base
     build:
-      context: .
+      context: ..
+      dockerfile: docker/Dockerfile
       args:
         RUNNER_VERSION: "${RUNNER_VERSION}"
         BASE_IMAGE: ${image}

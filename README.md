@@ -6,6 +6,34 @@ no database, no persistence.
 
 ## Layout
 
+What you interact with:
+
+```
+config.example.yml    # inventory template; copy to config.yml
+config.yml            # your inventory (gitignored)
+start.sh              # build + run + log tail, all through one script
+README.md
+```
+
+Build internals (you normally don't touch these):
+
+```
+docker/
+├── Dockerfile
+├── docker-compose.yml   # generated from config.yml by render.sh (gitignored)
+├── render.sh            # config.yml -> docker-compose.yml
+└── scripts/             # copied into the image as /usr/local/bin/*
+    ├── entrypoint.sh
+    ├── start-runner.sh
+    ├── fetch-token.sh
+    ├── fetch-jitconfig.sh
+    ├── delete-runner.sh
+    ├── runner-store.sh
+    └── diag.sh
+```
+
+Inside the container:
+
 ```
 /etc/github-runners/config.yml   # runner inventory (mount your own)
 /opt/actions-runner              # extracted runner tarball, used as a template
@@ -115,16 +143,21 @@ You can freely mix the two modes in the same `config.yml`.
 ## Build and run
 
 ```sh
-docker compose build
-cp config.example.yml config.yml   # then edit it
-docker compose up -d
-docker compose logs -f
+cp config.example.yml config.yml    # then edit it
+./start.sh                          # build + up, follows logs
+./start.sh up -d                    # detached
+./start.sh logs -f                  # tail logs
+./start.sh down                     # stop + remove
 ```
 
-Or plain docker:
+`start.sh` (re-)generates `docker/docker-compose.yml` from `config.yml`
+every invocation and then forwards all remaining arguments to
+`docker compose`.
+
+Or plain docker, from the repo root:
 
 ```sh
-docker build -t github-multirunner .
+docker build -t github-multirunner -f docker/Dockerfile .
 docker run -d --name runners \
     --tmpfs /home/github-runner:size=8g,uid=1000,gid=1000 \
     -v "$PWD/config.yml":/etc/github-runners/config.yml:ro \
