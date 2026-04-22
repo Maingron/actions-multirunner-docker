@@ -225,7 +225,15 @@ for line in "${RUNNERS[@]}"; do
     if [[ -z "$workdir" ]]; then
         repo_name="${repo_url##*/}"
         repo_name="${repo_name%.git}"
-        workdir="${repo_name}/${title}"
+        # Sanitize: the GitHub Actions runner invokes steps via a shell that
+        # ends up splitting on whitespace in the work-folder path (bash sees
+        # only the first word of $0 and fails with "Is a directory"). Collapse
+        # anything outside [A-Za-z0-9._-] to '_' so the default path is always
+        # shell-safe. Users who set an explicit workdir: in config.yml are on
+        # their own -- we respect it verbatim.
+        safe_title="${title//[^A-Za-z0-9._-]/_}"
+        safe_repo="${repo_name//[^A-Za-z0-9._-]/_}"
+        workdir="${safe_repo}/${safe_title}"
     fi
 
     runner_dir="${RUNNERS_BASE}/${workdir}"
