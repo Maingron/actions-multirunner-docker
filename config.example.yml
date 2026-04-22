@@ -18,12 +18,18 @@
 #   workdir    - optional, relative to /home/github-runner. Defaults to
 #                "<repo_name>/<title>".
 #   labels     - optional CSV, defaults to "self-hosted,linux,x64"
+#   idle_regeneration - optional, seconds. If >0 the ephemeral runner is
+#                  killed and rotated after this many seconds without a job.
+#                  The runner is deregistered via API, then a fresh JIT
+#                  config is minted. 0 / unset disables it. Ignored for
+#                  ephemeral: false.
 #
 # `defaults` applies to every runner unless overridden. `pat` can also come
 # from the GITHUB_PAT env var so you never have to put it in the file.
 
 defaults:
   ephemeral: true
+  idle_regeneration: 0               # rotate idle runners every hour
   # pat: github_pat_xxxxxxxxxxxxxxxxxxxx    # or set GITHUB_PAT in the environment
 
 runners:

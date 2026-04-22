@@ -16,8 +16,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --home-dir /home/github-runner --shell /bin/bash github-runner \
- && mkdir -p /etc/github-runners "${TEMPLATE_DIR}" \
- && chown github-runner:github-runner /home/github-runner
+ && mkdir -p /etc/github-runners "${TEMPLATE_DIR}" /var/lib/github-runners \
+ && chown github-runner:github-runner /home/github-runner /var/lib/github-runners
 
 # Fetch + extract the official runner tarball once; every runner instance
 # will be materialised from this template via hardlinks at start time.
@@ -35,6 +35,7 @@ COPY start-runner.sh     /usr/local/bin/start-runner.sh
 COPY fetch-token.sh      /usr/local/bin/fetch-token.sh
 COPY fetch-jitconfig.sh  /usr/local/bin/fetch-jitconfig.sh
 COPY delete-runner.sh    /usr/local/bin/delete-runner.sh
+COPY runner-store.sh     /usr/local/bin/runner-store.sh
 COPY diag.sh             /usr/local/bin/diag.sh
 COPY config.example.yml  /etc/github-runners/config.yml
 RUN chmod +x /usr/local/bin/entrypoint.sh \
@@ -42,6 +43,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/fetch-token.sh \
              /usr/local/bin/fetch-jitconfig.sh \
              /usr/local/bin/delete-runner.sh \
+             /usr/local/bin/runner-store.sh \
              /usr/local/bin/diag.sh \
  && chown -R github-runner:github-runner /etc/github-runners
 

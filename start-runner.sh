@@ -36,8 +36,27 @@ EPHEMERAL="${EPHEMERAL:-1}"
 PAT="${PAT:-}"
 RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,x64}"
 RUNNER_GROUP_ID="${RUNNER_GROUP_ID:-1}"
+# Idle-regeneration timeout (seconds). If >0, the ephemeral runner is killed
+# and rotated after this many seconds of inactivity (no Runner.Worker).
+# 0 = disabled.
+IDLE_REGENERATION="${IDLE_REGENERATION:-0}"
+IDLE_POLL_INTERVAL="${IDLE_POLL_INTERVAL:-10}"
 
 log() { printf '[%s] %s\n' "$title" "$*"; }
+
+# True iff a Runner.Worker process is currently running for this runner_dir.
+# Workers are spawned by Runner.Listener with the runner dir as CWD, so we
+# match on /proc/<pid>/cwd to avoid collisions between sibling runners.
+worker_active() {
+    local pid cwd
+    for pid in $(pgrep -x Runner.Worker 2>/dev/null || true); do
+        cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+        if [[ "$cwd" == "$runner_dir" || "$cwd" == "$runner_dir"/* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 materialise() {
     rm -rf "$runner_dir"
@@ -76,6 +95,7 @@ stop_child() {
         if [[ -n "$CURRENT_RUNNER_ID" && -n "$PAT" ]]; then
             log "deregistering JIT runner id=${CURRENT_RUNNER_ID}"
             /usr/local/bin/delete-runner.sh "$repo_url" "$PAT" "$CURRENT_RUNNER_ID" || true
+            /usr/local/bin/runner-store.sh remove "$CURRENT_RUNNER_ID" || true
         fi
         [[ -n "$JIT_ID_FILE" ]] && rm -f "$JIT_ID_FILE"
     elif [[ -d "$runner_dir" ]]; then
@@ -120,6 +140,10 @@ if [[ "$EPHEMERAL" == "1" ]]; then
             continue
         fi
         CURRENT_RUNNER_ID="$(cat "$JIT_ID_FILE" 2>/dev/null || true)"
+        if [[ -n "$CURRENT_RUNNER_ID" ]]; then
+            /usr/local/bin/runner-store.sh add \
+                "$repo_url" "$CURRENT_RUNNER_ID" "$runner_name" || true
+        fi
 
         materialise
         cd "$runner_dir"
@@ -127,14 +151,51 @@ if [[ "$EPHEMERAL" == "1" ]]; then
         log "running (ephemeral, one job then exit)"
         ./run.sh --jitconfig "$jitcfg" &
         RUN_PID=$!
+
+        # Optional idle watchdog: rotate a runner that's been waiting for a
+        # job for too long. Resets whenever a Runner.Worker is seen.
+        WATCHDOG_PID=""
+        if (( IDLE_REGENERATION > 0 )); then
+            (
+                last_active=$(date +%s)
+                while kill -0 "$RUN_PID" 2>/dev/null; do
+                    if worker_active; then
+                        last_active=$(date +%s)
+                    fi
+                    now=$(date +%s)
+                    if (( now - last_active >= IDLE_REGENERATION )); then
+                        log "idle for ${IDLE_REGENERATION}s, rotating runner"
+                        kill -TERM "$RUN_PID" 2>/dev/null || true
+                        exit 0
+                    fi
+                    sleep "$IDLE_POLL_INTERVAL"
+                done
+            ) &
+            WATCHDOG_PID=$!
+        fi
+
         wait "$RUN_PID" || true
         unset RUN_PID
+        if [[ -n "$WATCHDOG_PID" ]]; then
+            kill "$WATCHDOG_PID" 2>/dev/null || true
+            wait "$WATCHDOG_PID" 2>/dev/null || true
+            WATCHDOG_PID=""
+        fi
 
-        # Completed job => GitHub already removed it. Clear to avoid a
-        # spurious DELETE on shutdown.
+        # Always best-effort deregister. If a job completed the runner is
+        # already gone server-side (delete-runner.sh treats 404 as success);
+        # if we killed it on idle / crash, this cleans up the "offline"
+        # entry. Also drop it from the persistent store so a future startup
+        # sweep doesn't retry.
+        if [[ -n "$CURRENT_RUNNER_ID" ]]; then
+            if [[ -n "$PAT" ]]; then
+                /usr/local/bin/delete-runner.sh "$repo_url" "$PAT" "$CURRENT_RUNNER_ID" || true
+            fi
+            /usr/local/bin/runner-store.sh remove "$CURRENT_RUNNER_ID" || true
+        fi
         CURRENT_RUNNER_ID=""
 
-        log "job finished, flushing state"
+        log "runner exited, flushing state"
         sleep "$RESTART_DELAY"
     done
 else
