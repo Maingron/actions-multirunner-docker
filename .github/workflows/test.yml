@@ -9,3 +9,21 @@ jobs:
     steps:
       - name: Say hello from bash
         run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
+
+  test2:
+    runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
+    steps:
+      - name: Say hello from bash
+        run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
+
+  test3:
+    runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
+    steps:
+      - name: Say hello from bash
+        run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
+  
+  test4:
+    runs-on: [self-hosted, linux, x64, scope:general, image:debian:stable-slim]
+    steps:
+      - name: Say hello from bash
+        run: bash -c "echo \"Hello from the multirunner test workflow; Running on $(hostname)\""
