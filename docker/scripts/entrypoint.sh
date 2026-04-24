@@ -63,7 +63,7 @@ fi
 # Keep only runners whose image flavor matches this container.
 MATCHED=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img _ _ _ _ _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ r_img _ _ _ _ _ _ _ _ _ _ _ <<<"$line"
     if [[ "$r_img" == "$RUNNER_IMAGE_FLAVOR" ]]; then
         MATCHED+=("$line")
     fi
@@ -78,7 +78,7 @@ RUNNERS=("${MATCHED[@]}")
 # by this flavor -- sibling containers handle their own.
 declare -A REPO_PAT=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ _ _ _ _ _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ r_url _ _ _ r_pat _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ <<<"$line"
     [[ -n "$r_pat" ]] && REPO_PAT["$r_url"]="$r_pat"
 done
 
@@ -142,7 +142,7 @@ echo "entrypoint[${RUNNER_IMAGE_FLAVOR}]: starting ${#RUNNERS[@]} runner(s)"
 # ---------------------------------------------------------------------------
 ANY_DOCKER=0
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ _ r_docker _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ _ r_docker _ _ _ _ _ _ <<<"$line"
     [[ "$r_docker" == "1" ]] && { ANY_DOCKER=1; break; }
 done
 
@@ -235,7 +235,7 @@ touch "$PKGS_DONE_FILE" 2>/dev/null || sudo -n touch "$PKGS_DONE_FILE" || true
 declare -A PKG_SEEN=()
 declare -a PKGS_TO_INSTALL=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ r_pkgs _ _ _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ r_pkgs _ _ _ _ _ _ _ _ _ <<<"$line"
     [[ -z "$r_pkgs" ]] && continue
     for pkg in $r_pkgs; do
         [[ -n "${PKG_SEEN[$pkg]:-}" ]] && continue
@@ -279,7 +279,7 @@ touch "$STARTUP_DONE_FILE" 2>/dev/null || sudo -n touch "$STARTUP_DONE_FILE" || 
 
 declare -A STARTUP_SEEN=()
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ r_startup _ _ _ _ _ _ _ <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ r_startup _ _ _ _ _ _ _ _ _ _ <<<"$line"
     [[ -z "$r_startup" ]] && continue
     [[ -n "${STARTUP_SEEN[$r_startup]:-}" ]] && continue
     STARTUP_SEEN["$r_startup"]=1
@@ -317,8 +317,77 @@ shutdown() {
 }
 trap shutdown SIGTERM SIGINT
 
+# ---------------------------------------------------------------------------
+# Persistent storage (`persistent_storage.enabled: true`).
+#
+# Mounted into the container at $PERSISTENT_STORAGE_ROOT (default
+# /runner-storage) via a docker named volume declared by render.sh.
+# Each opted-in runner sees `$RUNNER_PERSISTENT_STORAGE` in its job env,
+# pointing at a subdirectory determined by `persistent_storage.scope`:
+#
+#   scope=shared  (default) -> $PERSISTENT_STORAGE_ROOT/shared
+#                              All opted-in runners in this image group
+#                              share the same directory. Use when you
+#                              need to hand files from one runner (e.g.
+#                              "build-01") to another ("deploy-01").
+#   scope=title             -> $PERSISTENT_STORAGE_ROOT/title/<title>
+#                              Pool instances of the same title share
+#                              the directory; siblings are isolated.
+#
+# Semi-persistent: any file untouched for longer than
+# `persistent_storage.ttl` seconds is deleted, both at container start
+# and again by start-runner.sh before every ephemeral job iteration.
+# Set ttl: 0 to keep forever. NOT an artifact service; there are no
+# guarantees beyond best-effort local retention.
+# ---------------------------------------------------------------------------
+PERSISTENT_STORAGE_ROOT="${PERSISTENT_STORAGE_ROOT:-/runner-storage}"
+export PERSISTENT_STORAGE_ROOT
+
+ANY_PS=0
 for line in "${RUNNERS[@]}"; do
-    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image startup_script additional_packages watchdog_enabled watchdog_interval docker_enabled instances_min instances_max instances_headroom <<<"$line"
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ r_ps _ _ <<<"$line"
+    [[ "$r_ps" == "1" ]] && { ANY_PS=1; break; }
+done
+
+if (( ANY_PS == 1 )); then
+    if [[ ! -d "$PERSISTENT_STORAGE_ROOT" ]]; then
+        echo "entrypoint: persistent_storage enabled but $PERSISTENT_STORAGE_ROOT is missing." >&2
+        echo "entrypoint: re-run ./render.sh + ./start.sh so the compose file is regenerated with the runner-storage volume." >&2
+        exit 1
+    fi
+    # The named volume is owned by root on first mount; the runner runs
+    # as github-runner (uid 1000) and needs write access.
+    sudo -n chown github-runner:github-runner "$PERSISTENT_STORAGE_ROOT" 2>/dev/null || \
+        chown github-runner:github-runner "$PERSISTENT_STORAGE_ROOT" 2>/dev/null || true
+    sudo -n chmod 0755 "$PERSISTENT_STORAGE_ROOT" 2>/dev/null || true
+
+    # Initial TTL sweep: start-runner.sh also sweeps per-iteration, but a
+    # container restart after a long idle should reclaim space immediately.
+    # Only whole minutes are expressible via find -mmin; sub-minute TTLs
+    # are rounded up to 1 minute.
+    for line in "${RUNNERS[@]}"; do
+        IFS=$'\x1f' read -r t_title _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ r_ps r_ttl r_scope <<<"$line"
+        [[ "$r_ps" == "1" ]] || continue
+        case "$r_scope" in
+            title) sub="title/$t_title" ;;
+            *)     sub="shared" ;;
+        esac
+        dir="$PERSISTENT_STORAGE_ROOT/$sub"
+        mkdir -p "$dir" 2>/dev/null || sudo -n mkdir -p "$dir"
+        chown -R github-runner:github-runner "$dir" 2>/dev/null || \
+            sudo -n chown -R github-runner:github-runner "$dir" 2>/dev/null || true
+        if [[ "$r_ttl" =~ ^[0-9]+$ ]] && (( r_ttl > 0 )); then
+            mmin=$(( (r_ttl + 59) / 60 ))
+            # -depth so we remove files before their enclosing (now-empty)
+            # dirs; -mindepth 1 keeps the root itself. Errors are swallowed
+            # -- races between the sweep and live jobs are expected.
+            find "$dir" -depth -mindepth 1 -mmin "+${mmin}" -delete 2>/dev/null || true
+        fi
+    done
+fi
+
+for line in "${RUNNERS[@]}"; do
+    IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat labels group idle_regeneration image startup_script additional_packages watchdog_enabled watchdog_interval docker_enabled instances_min instances_max instances_headroom ps_enabled ps_ttl ps_scope <<<"$line"
 
     if [[ -z "$workdir" ]]; then
         repo_name="${repo_url##*/}"
@@ -336,6 +405,15 @@ for line in "${RUNNERS[@]}"; do
 
     runner_dir="${RUNNERS_BASE}/${workdir}"
 
+    # Per-runner persistent storage path (empty if disabled).
+    ps_path=""
+    if [[ "$ps_enabled" == "1" ]]; then
+        case "$ps_scope" in
+            title) ps_path="$PERSISTENT_STORAGE_ROOT/title/$title" ;;
+            *)     ps_path="$PERSISTENT_STORAGE_ROOT/shared" ;;
+        esac
+    fi
+
     EPHEMERAL="$ephemeral" PAT="$pat" \
     RUNNER_LABELS="$labels" RUNNER_GROUP_ID="$group" \
     IDLE_REGENERATION="$idle_regeneration" \
@@ -345,6 +423,8 @@ for line in "${RUNNERS[@]}"; do
     POOL_MIN="$instances_min" \
     POOL_MAX="$instances_max" \
     POOL_HEADROOM="$instances_headroom" \
+    PERSISTENT_STORAGE_PATH="$ps_path" \
+    PERSISTENT_STORAGE_TTL="$ps_ttl" \
         /usr/local/bin/pool-manager.sh \
             "$title" "$repo_url" "$token" "$runner_dir" &
     PIDS+=($!)

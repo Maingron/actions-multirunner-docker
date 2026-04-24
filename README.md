@@ -271,6 +271,66 @@ Trade-offs vs. host-socket pass-through:
 If an image group has *no* runner with `docker.enabled: true`, no
 sidecar is rendered and that service has no docker at all.
 
+## Semi-persistent storage between jobs
+
+Opt a runner into a scratch directory that survives across jobs, so a
+pipeline split across multiple runners (e.g. one runner builds, another
+deploys) can hand files over directly — no `actions/upload-artifact`
+round-trip, no external storage.
+
+```yaml
+defaults:
+  persistent_storage:
+    enabled: true       # default false
+    ttl: 3600           # seconds; files untouched for this long are swept
+    scope: shared       # shared (default) | title
+```
+
+What it does:
+
+- Mounts a docker named volume at `/runner-storage` inside every runner
+  in the image group that has at least one opted-in runner.
+- Exports `$RUNNER_PERSISTENT_STORAGE` into every job on an opted-in
+  runner. Use it directly from workflow steps:
+
+  ```yaml
+  jobs:
+    build:
+      runs-on: [self-hosted, build]
+      steps:
+        - uses: actions/checkout@v4
+        - run: make dist
+        - run: cp -r dist "$RUNNER_PERSISTENT_STORAGE/"
+
+    deploy:
+      needs: build
+      runs-on: [self-hosted, deploy]
+      steps:
+        - run: rsync -a "$RUNNER_PERSISTENT_STORAGE/dist/" prod:/srv/
+  ```
+
+- `scope: shared` (default) — all opted-in runners in the image group
+  share one directory (`/runner-storage/shared`). Pick this when
+  different runner titles need to see each other's files.
+- `scope: title` — each runner title gets its own subdir
+  (`/runner-storage/title/<title>`). Pool instances of the same title
+  still share.
+- `ttl` is enforced both at container start and before every ephemeral
+  job iteration via `find -mmin`. Files whose mtime is older than the
+  TTL are deleted. Set `ttl: 0` to keep indefinitely (not recommended
+  unless you clean up in your workflow).
+
+What it is NOT:
+
+- Not a replacement for `actions/cache` or `actions/upload-artifact` —
+  no cross-host distribution, no integrity checks, no compression.
+- Not synced between image groups — two runners with different `image:`
+  values do not share storage.
+- Not crash-safe — wiping the `runner-storage-<slug>` volume
+  (`docker compose down -v`) destroys everything.
+- Not suitable for secrets — anything you write is readable by every
+  future job landing on an opted-in runner in the same image group.
+
 ## Build and run
 
 ```sh

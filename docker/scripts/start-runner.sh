@@ -56,6 +56,26 @@ WATCHDOG_INTERVAL="${WATCHDOG_INTERVAL:-0}"
 WATCHDOG_GRACE="${WATCHDOG_GRACE:-60}"
 WATCHDOG_MISSES="${WATCHDOG_MISSES:-2}"
 
+# Semi-persistent storage shared with GitHub Actions jobs as
+# $RUNNER_PERSISTENT_STORAGE. Empty = feature disabled for this runner.
+# TTL is enforced per-iteration (ephemeral) or once before startup
+# (persistent): files not modified within $PERSISTENT_STORAGE_TTL seconds
+# are deleted. 0 = keep forever.
+PERSISTENT_STORAGE_PATH="${PERSISTENT_STORAGE_PATH:-}"
+PERSISTENT_STORAGE_TTL="${PERSISTENT_STORAGE_TTL:-0}"
+
+sweep_persistent_storage() {
+    [[ -z "$PERSISTENT_STORAGE_PATH" ]] && return 0
+    [[ -d "$PERSISTENT_STORAGE_PATH" ]] || mkdir -p "$PERSISTENT_STORAGE_PATH" 2>/dev/null || return 0
+    if [[ "$PERSISTENT_STORAGE_TTL" =~ ^[0-9]+$ ]] && (( PERSISTENT_STORAGE_TTL > 0 )); then
+        local mmin=$(( (PERSISTENT_STORAGE_TTL + 59) / 60 ))
+        # -depth + -mindepth 1 preserves the root dir and removes leaf
+        # entries before their (then-empty) parents. Suppress all errors;
+        # a concurrent job writing to this tree will race harmlessly.
+        find "$PERSISTENT_STORAGE_PATH" -depth -mindepth 1 -mmin "+${mmin}" -delete 2>/dev/null || true
+    fi
+}
+
 log() { printf '[%s] %s\n' "$title" "$*"; }
 
 # True iff a Runner.Worker process is currently running for this runner_dir.
@@ -176,6 +196,9 @@ if [[ "$EPHEMERAL" == "1" ]]; then
         materialise
         cd "$runner_dir"
 
+        sweep_persistent_storage
+        export RUNNER_PERSISTENT_STORAGE="$PERSISTENT_STORAGE_PATH"
+
         log "running (ephemeral, one job then exit)"
         ./run.sh --jitconfig "$jitcfg" &
         RUN_PID=$!
@@ -284,6 +307,9 @@ else
         log "registration failed; retrying in ${RESTART_DELAY}s"
         sleep "$RESTART_DELAY"
     done
+
+    sweep_persistent_storage
+    export RUNNER_PERSISTENT_STORAGE="$PERSISTENT_STORAGE_PATH"
 
     while true; do
         log "running (persistent)"

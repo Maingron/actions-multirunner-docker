@@ -16,7 +16,7 @@ COMPOSE_FILE="docker/docker-compose.yml"
 
 MODE="pretty"
 WATCH=0
-WATCH_INTERVAL=1
+WATCH_INTERVAL=3
 
 while (( $# > 0 )); do
     case "$1" in

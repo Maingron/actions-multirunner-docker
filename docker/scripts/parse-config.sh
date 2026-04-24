@@ -7,6 +7,8 @@
 #     \x1f watchdog_enabled \x1f watchdog_interval
 #     \x1f docker_enabled
 #     \x1f instances_min \x1f instances_max \x1f instances_headroom
+#     \x1f persistent_storage_enabled \x1f persistent_storage_ttl
+#     \x1f persistent_storage_scope
 #
 # Also supports --get <dotted.key> to print a single scalar (e.g.
 # `general.autoprune`, `defaults.image`). Prints empty string if missing.
@@ -118,7 +120,7 @@ function merge_pkgs(a, b,    arr, n, i, p, seen, out) {
 
 function emit_item(    title, repo, token, workdir, eph, pat, labels, group,
                        idle, image, startup, pkgs, wd_en, wd_iv, dk_en,
-                       in_min, in_max, in_head) {
+                       in_min, in_max, in_head, ps_en, ps_ttl, ps_scope) {
     title = ("title"    in it) ? it["title"]    : ""
     repo  = ("repo_url" in it) ? it["repo_url"] : ""
     if (title == "" || repo == "") {
@@ -174,6 +176,18 @@ function emit_item(    title, repo, token, workdir, eph, pat, labels, group,
     if (in_max  + 0 < in_min + 0)         in_max  = in_min
     if (in_head == "" || in_head + 0 < 0) in_head = "0"
 
+    # persistent_storage.{enabled,ttl,scope} -- per-runner overrides defaults.
+    ps_en = ("persistent_storage.enabled" in it_set) \
+            ? (bool_true(it["persistent_storage.enabled"]) ? "1" : "0") \
+            : (bool_true(d_ps_enabled) ? "1" : "0")
+    ps_ttl = ("persistent_storage.ttl" in it_set && it["persistent_storage.ttl"] != "") \
+             ? it["persistent_storage.ttl"] : d_ps_ttl
+    if (ps_ttl == "" || ps_ttl + 0 < 0) ps_ttl = "3600"
+    ps_scope = ("persistent_storage.scope" in it_set && it["persistent_storage.scope"] != "") \
+               ? it["persistent_storage.scope"] : d_ps_scope
+    ps_scope = tolower(ps_scope)
+    if (ps_scope != "title" && ps_scope != "shared") ps_scope = "shared"
+
     if (MODE != "runners") return
 
     if (eph == "1" && pat == "") {
@@ -185,10 +199,11 @@ function emit_item(    title, repo, token, workdir, eph, pat, labels, group,
         exit 1
     }
 
-    printf("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n",
+    printf("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n",
            title, repo, token, workdir, eph, pat, labels, group, idle,
            image, startup, pkgs, wd_en, wd_iv, dk_en,
-           in_min, in_max, in_head)
+           in_min, in_max, in_head,
+           ps_en, ps_ttl, ps_scope)
 }
 
 function set_default(key, val) {
@@ -221,6 +236,9 @@ BEGIN {
     d_in_min = "1"
     d_in_max = ""
     d_in_headroom = "0"
+    d_ps_enabled = "false"
+    d_ps_ttl = "3600"
+    d_ps_scope = "shared"
 
     g_autoprune = "false"
 }
@@ -324,6 +342,25 @@ BEGIN {
                 if      (k == "min")      { it["instances.min"]      = parse_scalar(v); it_set["instances.min"]      = 1 }
                 else if (k == "max")      { it["instances.max"]      = parse_scalar(v); it_set["instances.max"]      = 1 }
                 else if (k == "headroom") { it["instances.headroom"] = parse_scalar(v); it_set["instances.headroom"] = 1 }
+                next
+            }
+            if (pending_scope == "defaults" && pending_key == "persistent_storage") {
+                if      (k == "enabled") d_ps_enabled = parse_scalar(v)
+                else if (k == "ttl")     d_ps_ttl     = parse_scalar(v)
+                else if (k == "scope")   d_ps_scope   = parse_scalar(v)
+                next
+            }
+            if (pending_scope == "item" && pending_key == "persistent_storage") {
+                if (k == "enabled") {
+                    it["persistent_storage.enabled"] = parse_scalar(v)
+                    it_set["persistent_storage.enabled"] = 1
+                } else if (k == "ttl") {
+                    it["persistent_storage.ttl"] = parse_scalar(v)
+                    it_set["persistent_storage.ttl"] = 1
+                } else if (k == "scope") {
+                    it["persistent_storage.scope"] = parse_scalar(v)
+                    it_set["persistent_storage.scope"] = 1
+                }
                 next
             }
             # Unknown nested key -- swallow silently to avoid leaking into

@@ -117,7 +117,8 @@ for line in "${RUNNERS[@]}"; do
     IFS=$'\x1f' read -r title repo_url token workdir ephemeral pat \
                        labels group idle_regen image startup_script \
                        add_pkgs wd_enabled wd_interval docker_enabled \
-                       instances_min instances_max instances_headroom <<<"$line"
+                       instances_min instances_max instances_headroom \
+                       ps_enabled ps_ttl ps_scope <<<"$line"
 
     # Only report runners that target this container's image flavor.
     [[ -n "$FLAVOR" && "$image" != "$FLAVOR" ]] && continue

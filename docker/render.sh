@@ -123,18 +123,23 @@ fi
 # render.sh already cd'd into docker/, so parse-config.sh lives at ./scripts/.
 # ---------------------------------------------------------------------------
 declare -A DOCKER_IMAGES=()
+declare -A PS_IMAGES=()
 if [[ -x ./scripts/parse-config.sh ]]; then
     while IFS= read -r __line; do
         [[ -z "$__line" ]] && continue
-        # Field 10 = image, field 15 = docker_enabled.
+        # Field 10 = image, field 15 = docker_enabled, field 19 = ps_enabled.
         __img="$(awk 'BEGIN{FS="\x1f"} {print $10}' <<<"$__line")"
         __dk="$(awk 'BEGIN{FS="\x1f"} {print $15}' <<<"$__line")"
+        __ps="$(awk 'BEGIN{FS="\x1f"} {print $19}' <<<"$__line")"
         if [[ "$__dk" == "1" && -n "$__img" ]]; then
             DOCKER_IMAGES["$__img"]=1
         fi
+        if [[ "$__ps" == "1" && -n "$__img" ]]; then
+            PS_IMAGES["$__img"]=1
+        fi
     done < <(./scripts/parse-config.sh "$CONFIG_FILE" 2>/dev/null || true)
 fi
-unset __line __img __dk
+unset __line __img __dk __ps
 
 # ---------------------------------------------------------------------------
 # Render.
@@ -169,7 +174,9 @@ EOF
     for image in "${IMAGES[@]}"; do
         local tag; tag="$(slug "$image")"
         local docker_enabled=0
+        local ps_enabled=0
         [[ -n "${DOCKER_IMAGES[$image]:-}" ]] && docker_enabled=1
+        [[ -n "${PS_IMAGES[$image]:-}" ]] && ps_enabled=1
         cat <<EOF
   # image: ${image}
   runners-${tag}:
@@ -232,6 +239,13 @@ EOF
       - ../startup-scripts:/etc/github-runners/startup:ro
       - runner-state:/var/lib/github-runners
       - dind-${tag}-certs:/certs:ro
+EOF
+            if (( ps_enabled == 1 )); then
+                cat <<EOF
+      - runner-storage-${tag}:/runner-storage
+EOF
+            fi
+            cat <<EOF
 
   # Dedicated Docker-in-Docker daemon for runners-${tag}. Isolated from
   # the host and from every other service:
@@ -280,6 +294,19 @@ EOF
       start_period: 10s
 EOF
         fi
+        if (( docker_enabled == 0 && ps_enabled == 1 )); then
+            # Anchor `<<: *runner-base` provides a `volumes:` sequence, but
+            # YAML merge keys replace -- they don't concatenate -- so to
+            # add the persistent-storage mount we override `volumes:`
+            # entirely with the base set plus the storage volume.
+            cat <<EOF
+    volumes:
+      - ../config.yml:/etc/github-runners/config.yml:ro
+      - ../startup-scripts:/etc/github-runners/startup:ro
+      - runner-state:/var/lib/github-runners
+      - runner-storage-${tag}:/runner-storage
+EOF
+        fi
         echo
     done
 
@@ -294,6 +321,15 @@ EOF
         cat <<EOF
   dind-${tag}-data:
   dind-${tag}-certs:
+EOF
+    done
+    # Per-image persistent-storage volumes (one per image group that has at
+    # least one runner with persistent_storage.enabled: true).
+    for image in "${IMAGES[@]}"; do
+        [[ -z "${PS_IMAGES[$image]:-}" ]] && continue
+        local tag; tag="$(slug "$image")"
+        cat <<EOF
+  runner-storage-${tag}:
 EOF
     done
 
