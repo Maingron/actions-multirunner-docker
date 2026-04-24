@@ -381,7 +381,8 @@ you pass it via the config or the environment.
 
 ## Scaling to ~1000 runners
 
-- Raise `ulimits` (`nofile`, `nproc`) and the kernel's `pid_max` on the host.
+- Raise `ulimits` (`nofile`, `nproc`) and the kernel's `pid_max` on the host when you actually need very large fleets.
+- On constrained hosts (for example Raspberry Pi / rootless setups), do not force compose `ulimits` above host limits or containers may fail to start with `error setting rlimit type 7`.
 - Give the container enough CPU and RAM; a runner idling costs little, but
   1000 concurrent jobs will not.
 - `tmpfs` size must fit the sum of all live `_work` trees.

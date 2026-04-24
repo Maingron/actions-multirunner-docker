@@ -1,8 +1,5 @@
 x-runner-base:
   restart: unless-stopped
-  ulimits:
-    nofile: 1048576
-    nproc: 1048576
   pids_limit: -1
   volumes:
     - ../config.yml:/etc/github-runners/config.yml:ro
