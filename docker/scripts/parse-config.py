@@ -130,7 +130,14 @@ def normalize_runner_row(
     if not pat:
         pat = github_pat
 
-    labels = as_text(runner.get("labels", defaults["labels"]))
+    # Merge labels from defaults and runner config, preserving all unique labels
+    # including the essential "self-hosted" label from defaults
+    labels_merged = merge_unique_tokens(
+        split_listish(defaults.get("labels")),
+        split_listish(runner.get("labels")),
+    )
+    # Convert space-separated tokens back to CSV format for GitHub API
+    labels = labels_merged.replace(" ", ",") if labels_merged else DEFAULT_LABELS
     group = as_text(runner.get("runner_group_id", defaults["runner_group_id"])) or "1"
     idle = as_text(runner.get("idle_regeneration", defaults["idle_regeneration"])) or "0"
 
