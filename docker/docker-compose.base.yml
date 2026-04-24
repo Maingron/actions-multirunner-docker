@@ -1,0 +1,16 @@
+x-runner-base:
+  restart: unless-stopped
+  ulimits:
+    nofile: 1048576
+    nproc: 1048576
+  pids_limit: -1
+  volumes:
+    - ../config.yml:/etc/github-runners/config.yml:ro
+    - ../startup-scripts:/etc/github-runners/startup:ro
+    - runner-state:/var/lib/github-runners
+  tmpfs:
+    - /home/github-runner:exec,size=8g,mode=0755,uid=1000,gid=1000
+services: {}
+volumes:
+  runner-state: {}
+networks: {}

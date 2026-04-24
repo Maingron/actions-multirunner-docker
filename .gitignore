@@ -1,3 +1,6 @@
 config.yml
 docker/docker-compose.yml
 *.log
+__pycache__/
+*.pyc
+docker/scripts/__pycache__/

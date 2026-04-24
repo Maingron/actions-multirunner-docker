@@ -1,0 +1,33 @@
+{
+  "general": {
+    "autoprune": false
+  },
+  "defaults": {
+    "ephemeral": true,
+    "pat": "",
+    "labels": "self-hosted,linux,x64",
+    "runner_group_id": "1",
+    "idle_regeneration": 0,
+    "image": "debian:stable-slim",
+    "startup_script": "",
+    "additional_packages": [],
+    "watchdog": {
+      "enabled": false,
+      "interval": 0
+    },
+    "docker": {
+      "enabled": false
+    },
+    "instances": {
+      "min": 1,
+      "max": "",
+      "headroom": 0
+    },
+    "persistent_storage": {
+      "enabled": false,
+      "ttl": 3600,
+      "scope": "shared"
+    }
+  },
+  "runners": []
+}

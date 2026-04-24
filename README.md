@@ -21,17 +21,21 @@ Build internals (you normally don't touch these):
 ```
 docker/
 ├── Dockerfile
-├── docker-compose.yml   # generated from config.yml by render.sh (gitignored)
-├── render.sh            # config.yml -> docker-compose.yml
+├── docker-compose.base.yml  # static compose baseline patched by render.py
+├── docker-compose.yml   # generated from config.yml by render.py (gitignored)
+├── render.py            # patches docker-compose.base.yml with config-driven services
 └── scripts/             # copied into the image as /usr/local/bin/*
-    ├── entrypoint.sh
-    ├── start-runner.sh
-    ├── fetch-token.sh
-    ├── fetch-jitconfig.sh
-    ├── delete-runner.sh
-    ├── runner-store.sh
-    ├── install-packages.sh   # autodetects apt / dnf / apk / zypper / pacman
-    └── diag.sh
+  ├── entrypoint.py
+  ├── start-runner.py
+  ├── pool-manager.py
+  ├── fetch-token.py
+  ├── fetch-jitconfig.py
+  ├── delete-runner.py
+  ├── runner-store.py
+  ├── install-packages.py   # autodetects apt / dnf / apk / zypper / pacman
+    ├── parse-config.py       # yaml parser implementation
+  ├── status.py
+  └── diag.py
 ```
 
 Inside the container:
@@ -211,15 +215,16 @@ runners:
 
 What this does:
 
-- `render.sh` groups runners by `image:`. For every image group that has
+- `render.py` starts from `docker/docker-compose.base.yml`, then groups runners by `image:`.
+  For every image group that has
   **at least one** runner with `docker.enabled: true`, it emits a
   dedicated `docker:dind` sidecar service (e.g. `dind-debian-stable-slim`)
   on a private compose network shared **only** with that runner service.
 - The runner container gets
-  `DOCKER_HOST=tcp://dind-<slug>:2375` and `depends_on` the sidecar's
+  `DOCKER_HOST=tcp://dind-<slug>:2376`, TLS client certs, and `depends_on` the sidecar's
   health check, so the runner won't start handing out jobs until the
   daemon answers.
-- `entrypoint.sh` installs the `docker` CLI from the distro-independent
+- `entrypoint.py` installs the `docker` CLI from the distro-independent
   static tarball (`download.docker.com`) if it isn't already present.
 
 Isolation properties:
@@ -341,7 +346,8 @@ cp config.example.yml config.yml    # then edit it
 ./start.sh down                     # stop + remove
 ```
 
-`start.sh` (re-)generates `docker/docker-compose.yml` from `config.yml`
+`start.sh` (re-)generates `docker/docker-compose.yml` by patching
+`docker/docker-compose.base.yml` with `config.yml`
 every invocation and then forwards all remaining arguments to
 `docker compose`.
 

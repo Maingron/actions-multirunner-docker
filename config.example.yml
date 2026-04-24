@@ -40,7 +40,7 @@
 #                   ubuntu:24.04
 #                   ubuntu:22.04
 #                Each unique image becomes one docker-compose service --
-#                run `./render.sh` after editing the inventory to
+#                run `python3 ./docker/render.py` after editing the inventory to
 #                regenerate docker-compose.yml, then `docker compose up`
 #                (or just run `./start.sh`, which does both).
 #                A runner is only launched by the container whose image

@@ -30,7 +30,7 @@ Rules:
   file (e.g. `docker compose down -v`) to force a re-run.
 - The container's package manager determines what syntax you use inside
   the script (`apt-get install -y ...` on debian/ubuntu, `dnf install -y
-  ...` on fedora, `apk add ...` on alpine, etc.). `install-packages.sh`
+  ...` on fedora, `apk add ...` on alpine, etc.). `install-packages.py`
   is available on `$PATH` inside the container if you want a
   package-manager-agnostic install call.
 - A failed startup script aborts container startup — no runners launch.
