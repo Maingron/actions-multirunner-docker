@@ -194,6 +194,9 @@ EOF
     environment:
       GITHUB_PAT: \${GITHUB_PAT:-}
       RUNNER_IMAGE_FLAVOR: ${image}
+      # Host machine's hostname, injected by start.sh. Used by
+      # entrypoint.sh to auto-label runners with \`host:<hostname>\`.
+      HOST_HOSTNAME: \${HOST_HOSTNAME:-}
 EOF
         if (( docker_enabled == 1 )); then
             cat <<EOF

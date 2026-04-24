@@ -307,6 +307,72 @@ done
 
 declare -a PIDS=()
 
+# ---------------------------------------------------------------------------
+# Auto-injected labels.
+#
+# Every runner gets a small set of `key:value` labels derived from runtime
+# context, on top of whatever the user put in `labels:` in config.yml.
+# Currently auto-injected:
+#
+#   architecture:<x64|arm64|arm|x86|...>   from uname -m in the container
+#   image:<flavor>                         the runner's image: field
+#   host:<hostname>                        the host machine's hostname
+#                                          (propagated via HOST_HOSTNAME;
+#                                          falls back to the container's
+#                                          own hostname if unset)
+#   docker:<true|false>                    whether docker.enabled is on
+#
+# Any key the user already specified explicitly in `labels:` wins -- we
+# never override. Match is by the `key:` prefix of each existing label,
+# so e.g. putting `image:custom` in config.yml suppresses the auto one.
+# ---------------------------------------------------------------------------
+case "$(uname -m)" in
+    x86_64)        RUNNER_ARCH_LABEL="x64" ;;
+    aarch64|arm64) RUNNER_ARCH_LABEL="arm64" ;;
+    armv7l|armv6l) RUNNER_ARCH_LABEL="arm" ;;
+    i386|i686)     RUNNER_ARCH_LABEL="x86" ;;
+    *)             RUNNER_ARCH_LABEL="$(uname -m)" ;;
+esac
+AUTO_HOST_LABEL="${HOST_HOSTNAME:-$(hostname)}"
+
+# Merge auto labels into a user-supplied CSV. Preserves order, trims
+# whitespace around existing entries, and skips any auto label whose key
+# is already present in the user's labels (matched by "<key>:" prefix;
+# the first ":" separates key from value, so labels with colons in their
+# value like "image:debian:stable-slim" still parse correctly).
+merge_auto_labels() {
+    local csv="$1"; shift
+    local -A seen_keys=()
+    local -a out=()
+    local item key value pair
+    local IFS=','
+    for item in $csv; do
+        # Trim surrounding whitespace.
+        item="${item#"${item%%[![:space:]]*}"}"
+        item="${item%"${item##*[![:space:]]}"}"
+        [[ -z "$item" ]] && continue
+        out+=("$item")
+        if [[ "$item" == *:* ]]; then
+            key="${item%%:*}"
+            seen_keys["$key"]=1
+        fi
+    done
+    IFS=$' \t\n'
+    for pair in "$@"; do
+        key="${pair%%=*}"
+        value="${pair#*=}"
+        [[ -z "$value" ]] && continue
+        [[ -n "${seen_keys[$key]:-}" ]] && continue
+        out+=("${key}:${value}")
+        seen_keys["$key"]=1
+    done
+    local joined=""
+    for item in "${out[@]}"; do
+        joined="${joined:+$joined,}${item}"
+    done
+    printf '%s' "$joined"
+}
+
 shutdown() {
     echo "entrypoint: received shutdown, stopping ${#PIDS[@]} runner(s)"
     for pid in "${PIDS[@]}"; do
@@ -413,6 +479,19 @@ for line in "${RUNNERS[@]}"; do
             *)     ps_path="$PERSISTENT_STORAGE_ROOT/shared" ;;
         esac
     fi
+
+    # Auto-inject architecture/image/host/docker labels. User-specified
+    # labels in config.yml win (matched by "<key>:" prefix).
+    if [[ "$docker_enabled" == "1" ]]; then
+        docker_label_value="true"
+    else
+        docker_label_value="false"
+    fi
+    labels="$(merge_auto_labels "$labels" \
+        "architecture=$RUNNER_ARCH_LABEL" \
+        "image=$image" \
+        "host=$AUTO_HOST_LABEL" \
+        "docker=$docker_label_value")"
 
     EPHEMERAL="$ephemeral" PAT="$pat" \
     RUNNER_LABELS="$labels" RUNNER_GROUP_ID="$group" \

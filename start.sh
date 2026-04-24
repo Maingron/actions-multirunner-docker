@@ -32,6 +32,13 @@ fi
 # exists so docker compose doesn't error out on a missing path.
 mkdir -p startup-scripts
 
+# Propagate the host's hostname into containers so entrypoint.sh can
+# auto-inject a `host:<hostname>` label onto every runner. Containers
+# otherwise only know their own (compose-assigned) hostname, which is
+# useless for identifying which physical machine a runner lives on.
+# Users can override by setting HOST_HOSTNAME in the environment.
+export HOST_HOSTNAME="${HOST_HOSTNAME:-$(hostname)}"
+
 # (Re)generate docker/docker-compose.yml from config.yml.
 ./docker/render.sh
 

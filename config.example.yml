@@ -17,7 +17,16 @@
 #   ephemeral  - true (default) or false. Overrides defaults.ephemeral.
 #   workdir    - optional, relative to /home/github-runner. Defaults to
 #                "<repo_name>/<title>".
-#   labels     - optional CSV, defaults to "self-hosted,linux,x64"
+#   labels     - optional CSV, defaults to "self-hosted,linux,x64".
+#                Four `key:value` labels are always auto-injected on top
+#                of whatever you list here (explicit entries win, matched
+#                by the "<key>:" prefix):
+#                   architecture:<x64|arm64|arm|x86|...>   uname -m
+#                   image:<flavor>                         image: field
+#                   host:<hostname>                        host machine
+#                   docker:<true|false>                    docker.enabled
+#                So you only need to list extra labels specific to your
+#                workflows (scope:general, jit, fast, ...).
 #   idle_regeneration - optional, seconds. If >0 the ephemeral runner is
 #                  killed and rotated after this many seconds without a job.
 #                  The runner is deregistered via API, then a fresh JIT
