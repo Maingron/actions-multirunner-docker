@@ -42,7 +42,14 @@ class RunnerSupervisor:
         self.jit_id_file = ""
 
     def log(self, message: str) -> None:
-        print(f"[{self.title}] {message}", flush=True)
+        # Extract owner/repo from full URL (e.g., https://github.com/owner/repo -> owner/repo)
+        repo_part = ""
+        if "github.com/" in self.repo_url:
+            repo_part = self.repo_url.split("github.com/", 1)[1].rstrip("/").rstrip(".git")
+        else:
+            repo_part = self.repo_url
+        prefix = f"[{self.title} ({repo_part})]" if repo_part else f"[{self.title}]"
+        print(f"{prefix} {message}", flush=True)
 
     def sweep_persistent_storage(self) -> None:
         if not self.persistent_storage_path:

@@ -311,7 +311,9 @@ def main() -> int:
         return idle_forever()
 
     sweep_stale_runners(matched, flavor)
-    log(f"entrypoint[{flavor}]: starting {len(matched)} runner(s)")
+    # Build a summary of runners being started with their repos
+    runner_summary = ", ".join(f"{r.title} ({r.repo_url})" for r in matched)
+    log(f"entrypoint[{flavor}]: starting {len(matched)} runner(s): {runner_summary}")
     ensure_docker_sidecar(matched)
     install_additional_packages(matched)
     run_startup_scripts(matched)

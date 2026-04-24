@@ -20,8 +20,17 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
-def log(base_title: str, message: str) -> None:
-    print(f"[pool:{base_title}] {message}", flush=True)
+def log(base_title: str, message: str, repo_url: str = "") -> None:
+    prefix = f"[pool:{base_title}"
+    if repo_url:
+        # Extract owner/repo from full URL (e.g., https://github.com/owner/repo -> owner/repo)
+        if "github.com/" in repo_url:
+            repo_part = repo_url.split("github.com/", 1)[1].rstrip("/").rstrip(".git")
+        else:
+            repo_part = repo_url
+        prefix += f" ({repo_part})"
+    prefix += "] "
+    print(f"{prefix}{message}", flush=True)
 
 
 def worker_active_in_dir(directory: str) -> bool:
@@ -42,26 +51,26 @@ def spawn_instance(base_title: str, repo_url: str, static_token: str, base_workd
         return False
     title = instance_title(base_title, free_idx, singleton)
     directory = instance_dir(base_workdir, free_idx, singleton)
-    log(base_title, f"spawning instance {free_idx} (title={title})")
+    log(base_title, f"spawning instance {free_idx} (title={title})", repo_url)
     proc = subprocess.Popen(["python3", "/usr/local/bin/start-runner.py", title, repo_url, static_token, directory], text=True)
     pids[free_idx] = proc
     dirs[free_idx] = directory
     return True
 
 
-def reap_dead(base_title: str, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str]) -> None:
+def reap_dead(base_title: str, repo_url: str, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str]) -> None:
     for idx in tuple(pids):
         proc = pids[idx]
         if proc.poll() is None:
             continue
         proc.wait(timeout=0)
-        log(base_title, f"instance {idx} exited")
+        log(base_title, f"instance {idx} exited", repo_url)
         del pids[idx]
         dirs.pop(idx, None)
 
 
-def shutdown(base_title: str, pids: dict[int, subprocess.Popen[str]]) -> None:
-    log(base_title, f"shutting down pool ({len(pids)} instance(s))")
+def shutdown(base_title: str, repo_url: str, pids: dict[int, subprocess.Popen[str]]) -> None:
+    log(base_title, f"shutting down pool ({len(pids)} instance(s))", repo_url)
     for proc in pids.values():
         if proc.poll() is None:
             proc.terminate()
@@ -75,7 +84,7 @@ def shutdown(base_title: str, pids: dict[int, subprocess.Popen[str]]) -> None:
 def fill_pool(base_title: str, repo_url: str, static_token: str, base_workdir: str, singleton: bool, count: int, pool_max: int, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str]) -> None:
     for _ in range(count):
         if not spawn_instance(base_title, repo_url, static_token, base_workdir, singleton, pool_max, pids, dirs):
-            return
+            return  # repo_url passed to spawn_instance which logs it
 
 
 def current_pool_state(dirs: dict[int, str]) -> tuple[int, list[int]]:
@@ -94,10 +103,10 @@ def reconcile_pool(base_title: str, repo_url: str, static_token: str, base_workd
     alive = len(pids)
     desired = max(pool_min, min(pool_max, busy + pool_headroom))
     if verbose:
-        log(base_title, f"tick: busy={busy} idle={alive - busy} alive={alive} desired={desired} (min={pool_min} max={pool_max} headroom={pool_headroom})")
+        log(base_title, f"tick: busy={busy} idle={alive - busy} alive={alive} desired={desired} (min={pool_min} max={pool_max} headroom={pool_headroom})", repo_url)
     if alive < desired:
         need = desired - alive
-        log(base_title, f"scale up: busy={busy} alive={alive} -> spawning {need} (desired={desired})")
+        log(base_title, f"scale up: busy={busy} alive={alive} -> spawning {need} (desired={desired})", repo_url)
         fill_pool(base_title, repo_url, static_token, base_workdir, singleton, need, pool_max, pids, dirs)
         return
     if alive <= desired:
@@ -106,7 +115,7 @@ def reconcile_pool(base_title: str, repo_url: str, static_token: str, base_workd
     for idx in idle_idxs:
         if excess <= 0:
             break
-        log(base_title, f"scale down: draining idle instance {idx} (pid={pids[idx].pid})")
+        log(base_title, f"scale down: draining idle instance {idx} (pid={pids[idx].pid})", repo_url)
         pids[idx].terminate()
         excess -= 1
 
@@ -131,18 +140,18 @@ def main() -> int:
     def handle_signal(signum: int, frame: object) -> None:
         nonlocal stopping
         stopping = True
-        shutdown(base_title, pids)
+        shutdown(base_title, repo_url, pids)
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    log(base_title, f"starting pool (min={pool_min} max={pool_max} headroom={pool_headroom})")
+    log(base_title, f"starting pool (min={pool_min} max={pool_max} headroom={pool_headroom})", repo_url)
     fill_pool(base_title, repo_url, static_token, base_workdir, singleton, pool_min, pool_max, pids, dirs)
 
     while not stopping:
         time.sleep(poll_interval)
-        reap_dead(base_title, pids, dirs)
+        reap_dead(base_title, repo_url, pids, dirs)
 
         reconcile_pool(base_title, repo_url, static_token, base_workdir, singleton, pool_min, pool_max, pool_headroom, pids, dirs, verbose)
     return 0
