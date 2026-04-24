@@ -231,21 +231,40 @@ EOF
       # so \`no-new-privileges\` must stay false -- documented explicitly
       # rather than silently inherited.
       - no-new-privileges=false
-    # Extra volumes beyond the base set: the DinD client certs. Listing
-    # everything again because YAML anchor merge doesn't concatenate
-    # sequences.
+    # Extra volumes beyond the base set: the DinD client certs + the
+    # shared workspace volume (see note below). Listing everything again
+    # because YAML anchor merge doesn't concatenate sequences.
     volumes:
       - ../config.yml:/etc/github-runners/config.yml:ro
       - ../startup-scripts:/etc/github-runners/startup:ro
       - runner-state:/var/lib/github-runners
       - dind-${tag}-certs:/certs:ro
+      # Shared workspace between runner and DinD. When a container-action
+      # (like \`burnett01/rsync-deployments\`) runs, the runner asks DinD
+      # to \`docker run -v \$GITHUB_WORKSPACE:/github/workspace ...\`.
+      # DinD resolves that bind-mount source against its OWN filesystem,
+      # not the runner's -- so without a shared volume here, DinD sees
+      # an empty dir where the runner's \`_work\` tree should be, and
+      # the action launches against a blank workspace. Mounting the
+      # same named volume at the same path in both containers makes the
+      # bind-mount resolve to the same data. This replaces the base
+      # anchor's tmpfs; we therefore also clear \`tmpfs:\` below.
+      - runner-workspace-${tag}:/home/github-runner
 EOF
             if (( ps_enabled == 1 )); then
                 cat <<EOF
+      # Persistent inter-runner scratch. Mounted into the DinD sidecar
+      # too so container-actions consuming \$RUNNER_PERSISTENT_STORAGE
+      # see the same directory.
       - runner-storage-${tag}:/runner-storage
 EOF
             fi
             cat <<EOF
+    # Clear the tmpfs inherited from the anchor. With docker enabled
+    # we need a named volume at /home/github-runner so DinD can see the
+    # workspace; you can't mount both tmpfs and a volume at the same
+    # path. Trade-off: slower than tmpfs, but correctness wins.
+    tmpfs: []
 
   # Dedicated Docker-in-Docker daemon for runners-${tag}. Isolated from
   # the host and from every other service:
@@ -281,6 +300,23 @@ EOF
       # restarts don't force a full re-pull. Wipe with
       # \`docker volume rm docker_dind-${tag}-data\`.
       - dind-${tag}-data:/var/lib/docker
+      # Shared workspace with the runner service. Mounted at the exact
+      # same path so that when the runner issues
+      # \`docker run -v /home/github-runner/<workdir>/_work/...:/github/workspace ...\`
+      # DinD resolves that source path against this volume and the
+      # action container sees the runner's checked-out code, downloaded
+      # artifacts, etc. Without this, container-based actions always
+      # land in an empty workspace.
+      - runner-workspace-${tag}:/home/github-runner
+EOF
+            if (( ps_enabled == 1 )); then
+                cat <<EOF
+      # Persistent inter-runner scratch. Shared with the runner service
+      # so container-actions can read/write \$RUNNER_PERSISTENT_STORAGE.
+      - runner-storage-${tag}:/runner-storage
+EOF
+            fi
+            cat <<EOF
     networks:
       - dind-${tag}
     healthcheck:
@@ -321,6 +357,13 @@ EOF
         cat <<EOF
   dind-${tag}-data:
   dind-${tag}-certs:
+  # Shared workspace between the runner and its DinD sidecar (see the
+  # inline comments in the service definitions above). Wipe with
+  # \`docker volume rm docker_runner-workspace-${tag}\` if you want a
+  # fresh \`_work\` tree -- but note that this removes the runner's
+  # registration credentials too, so persistent runners will have to
+  # re-register.
+  runner-workspace-${tag}:
 EOF
     done
     # Per-image persistent-storage volumes (one per image group that has at
