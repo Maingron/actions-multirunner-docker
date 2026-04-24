@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
 
-from shared.github_api import list_runners
 from shared.proc_utils import cwd_under, proc_pid_dirs, read_cmdline, read_comm
 from shared.runtime_helpers import derive_workdir, singleton_pool
 
@@ -56,31 +54,6 @@ def build_process_index() -> tuple[dict[str, int], list[int], list[int]]:
 
 def any_under(root: str, pids: list[int]) -> bool:
     return any(cwd_under(pid, root) for pid in pids)
-
-
-def fetch_api_matches(repo_url: str, pat: str, title: str, ephemeral: bool) -> dict[str, Any]:
-    _, response = list_runners(repo_url, pat)
-    if response.status != 200:
-        return {"reachable": False, "matches": []}
-    payload = response.json() or {}
-    matches: list[dict[str, Any]] = []
-    for runner in payload.get("runners", []):
-        if not isinstance(runner, dict):
-            continue
-        name = str(runner.get("name") or "")
-        if ephemeral and not name.startswith(f"{title}-"):
-            continue
-        if not ephemeral and name != title:
-            continue
-        matches.append(
-            {
-                "id": runner.get("id"),
-                "name": name,
-                "status": runner.get("status"),
-                "busy": bool(runner.get("busy", False)),
-            }
-        )
-    return {"reachable": True, "matches": matches}
 
 
 def parse_row(row: list[str]) -> dict[str, str]:
@@ -137,10 +110,8 @@ def emit_runner_status(
     headroom = int(data["instances_headroom"] or "0")
     for instance_title, runner_dir in instance_roster(title, base_runner_dir, sup_by_title, min_count, max_count, headroom):
         sup_pid = sup_by_title.get(instance_title)
-        api = None
-        effective_pat = data["pat"] or os.environ.get("GITHUB_PAT", "")
-        if effective_pat:
-            api = fetch_api_matches(repo_url, effective_pat, instance_title, data["ephemeral"] == "1")
+        listener = any_under(runner_dir, listeners)
+        worker = any_under(runner_dir, workers)
         print(
             json.dumps(
                 {
@@ -151,12 +122,17 @@ def emit_runner_status(
                     "ephemeral": data["ephemeral"] == "1",
                     "image": data["image"],
                     "sup_pid": sup_pid,
-                    "listener": any_under(runner_dir, listeners),
-                    "worker": any_under(runner_dir, workers),
+                    "listener": listener,
+                    "worker": worker,
+                    "runtime": {
+                        "source": "local",
+                        "supervisor": sup_pid is not None,
+                        "listener": listener,
+                        "worker": worker,
+                    },
                     "watchdog": data["wd_enabled"] == "1",
                     "idle_regeneration": int(data["idle_regen"] or "0"),
                     "pool": {"min": min_count, "max": max_count, "headroom": headroom},
-                    "api": api,
                 },
                 separators=(",", ":"),
             )

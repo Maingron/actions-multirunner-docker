@@ -117,7 +117,7 @@ def ensure_compose_file() -> None:
 def _parse_args(argv: list[str]) -> tuple[str, bool, int]:
     mode = "pretty"
     watch = False
-    interval = 3
+    interval = 1
     idx = 0
     while idx < len(argv):
         arg = argv[idx]
@@ -216,36 +216,32 @@ def _classify_runner(runner: dict[str, Any], c: Colors) -> tuple[str, str]:
     sup      = runner.get("sup_pid")
     worker   = bool(runner.get("worker"))
     listener = bool(runner.get("listener"))
-    api      = runner.get("api")
-    api_busy = 0
-    if isinstance(api, dict) and api.get("reachable"):
-        api_busy = sum(1 for m in api.get("matches", []) if m.get("busy"))
 
     if sup is None:
         return "down",     f"{c.red}○ down{c.reset}"
-    if worker or api_busy > 0:
+    if worker:
         return "busy",     f"{c.cyan}● busy{c.reset}"
     if listener:
         return "idle",     f"{c.green}● idle{c.reset}"
     return "starting",     f"{c.yellow}◐ start{c.reset}"
 
 
-def _fmt_api_cell(runner: dict[str, Any], c: Colors) -> str:
-    api = runner.get("api")
-    if api is None:
-        return f"{c.dim}—{c.reset}"
-    if not isinstance(api, dict) or not api.get("reachable"):
-        return f"{c.red}unreachable{c.reset}"
-    matches = api.get("matches", [])
-    if not matches:
-        return f"{c.dim}no regs{c.reset}"
-    busy_n   = sum(1 for m in matches if m.get("busy"))
-    online_n = sum(1 for m in matches if m.get("status") == "online")
-    if busy_n > 0:
-        return f"{c.cyan}busy{c.reset}"
-    if online_n > 0:
-        return f"{c.green}online{c.reset}"
-    return f"{c.yellow}offline{c.reset}"
+def _fmt_runtime_cell(runner: dict[str, Any], c: Colors) -> str:
+    runtime = runner.get("runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+
+    worker = bool(runtime.get("worker", runner.get("worker")))
+    listener = bool(runtime.get("listener", runner.get("listener")))
+    supervisor = bool(runtime.get("supervisor", runner.get("sup_pid") is not None))
+
+    if worker:
+        return f"{c.cyan}worker{c.reset}"
+    if listener:
+        return f"{c.green}listener{c.reset}"
+    if supervisor:
+        return f"{c.yellow}supervisor{c.reset}"
+    return f"{c.dim}—{c.reset}"
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +317,7 @@ def _write_runner_row(
     runner: dict[str, Any],
     w_title: int,
     w_status: int,
-    w_api: int,
+    w_runtime: int,
     w_job: int,
     w_repo: int,
     c: Colors,
@@ -334,12 +330,12 @@ def _write_runner_row(
     kind, status_txt = _classify_runner(runner, c)
     job_txt    = f"{c.cyan}● running{c.reset}" if worker else f"{c.dim}—{c.reset}"
     title_disp = _trunc(f"{c.bold}{title}{c.reset}", w_title - 1)
-    api_cell   = _fmt_api_cell(runner, c)
+    runtime_cell = _fmt_runtime_cell(runner, c)
 
     out.write("      ")
     out.write(_pad_r(title_disp, w_title))
     out.write(_pad_r(status_txt, w_status))
-    out.write(_pad_r(api_cell,   w_api))
+    out.write(_pad_r(runtime_cell, w_runtime))
     out.write(_pad_r(job_txt,    w_job))
     if w_repo > 0:
         out.write(_pad_r(_trunc(f"{c.dim}{repo}{c.reset}", w_repo - 1), w_repo))
@@ -352,7 +348,7 @@ def _process_runners(
     runners: list[dict[str, Any]],
     w_title: int,
     w_status: int,
-    w_api: int,
+    w_runtime: int,
     w_job: int,
     w_repo: int,
     c: Colors,
@@ -360,7 +356,7 @@ def _process_runners(
     """Write all runner rows; return (idle, busy, down, starting) counts."""
     idle = busy = down = start = 0
     for runner in runners:
-        kind = _write_runner_row(out, runner, w_title, w_status, w_api, w_job, w_repo, c)
+        kind = _write_runner_row(out, runner, w_title, w_status, w_runtime, w_job, w_repo, c)
         if kind == "idle":
             idle  += 1
         elif kind == "busy":
@@ -388,7 +384,7 @@ def _render_dashboard(
     bar_w = min(max(cols - 4, 40), 96)
     w_title, w_repo = _col_widths(cols)
     w_status = 10
-    w_api    = 12
+    w_runtime = 12
     w_job    = 10
 
     # Header
@@ -420,7 +416,7 @@ def _render_dashboard(
             continue
 
         idle, busy, down, start = _process_runners(
-            out, row["runners"], w_title, w_status, w_api, w_job, w_repo, c
+            out, row["runners"], w_title, w_status, w_runtime, w_job, w_repo, c
         )
         total_runners += idle + busy + down + start
         total_idle    += idle

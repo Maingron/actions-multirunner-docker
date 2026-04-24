@@ -97,6 +97,10 @@ or `false`; the default is `true`.
   startup, `run.sh` stays up and handles job after job. The runner stores
   its own credentials inside the instance dir, so no further token fetches
   are needed after startup.
+- **Status dashboard** — `./start.sh status` derives runner state from local
+  supervisor / listener / worker processes inside each container. It does
+  not poll `GET /actions/runners` on every refresh, so watch mode can run at
+  short intervals without generating GitHub API noise.
 
 ## PAT permissions for ephemeral / JIT runners
 
