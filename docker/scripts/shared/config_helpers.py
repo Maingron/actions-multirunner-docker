@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from configparser import ConfigParser
+from pathlib import PurePosixPath
 from typing import Any
 
 
@@ -53,6 +54,26 @@ def normalize_repo_url(value: Any) -> str:
     if repo.endswith(".git"):
         repo = repo[:-4]
     return repo
+
+
+def normalize_relative_path(value: Any) -> str:
+    raw = as_text(value).strip()
+    if not raw:
+        return ""
+
+    candidate = PurePosixPath(raw)
+    if candidate.is_absolute():
+        raise ValueError(f"path must be relative: {raw}")
+
+    parts: list[str] = []
+    for part in candidate.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            raise ValueError(f"path may not contain '..': {raw}")
+        parts.append(part)
+
+    return "/".join(parts)
 
 
 def nested_map(root: dict[str, Any], key: str) -> dict[str, Any]:

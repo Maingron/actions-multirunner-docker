@@ -16,7 +16,7 @@ from pathlib import Path
 from shared.github_api import delete_runner
 from shared.runner_records import RunnerRecord, load_runner_records
 from shared.runner_store_lib import list_records, remove_record
-from shared.runtime_helpers import derive_workdir, merge_auto_labels
+from shared.runtime_helpers import derive_workdir, merge_auto_labels, resolve_within, sanitize_component
 
 
 def log(message: str) -> None:
@@ -32,7 +32,21 @@ def stage_template(source_dir: Path, target_dir: Path) -> None:
         return
     log(f"entrypoint: staging template at {target_dir}")
     target_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["cp", "-a", f"{source_dir}/.", str(target_dir)], check=False)
+    if subprocess.run(["cp", "-a", f"{source_dir}/.", str(target_dir)], check=False).returncode != 0:
+        print(f"entrypoint: failed to stage template from {source_dir} into {target_dir}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def title_storage_component(title: str) -> str:
+    component = sanitize_component(title).strip("._-")
+    return component or "runner"
+
+
+def persistent_storage_dir(root: Path, record: RunnerRecord) -> Path:
+    relative = "shared"
+    if record.persistent_storage_scope == "title":
+        relative = f"title/{title_storage_component(record.title)}"
+    return resolve_within(root, relative)
 
 
 def matching_runners(records: list[RunnerRecord], flavor: str) -> list[RunnerRecord]:
@@ -109,7 +123,9 @@ def install_docker_cli_if_missing() -> None:
             raise SystemExit(1)
         docker_bin = tmp_dir / "docker" / "docker"
         if docker_bin.is_file():
-            subprocess.run(["sudo", "-n", "install", "-m", "0755", str(docker_bin), "/usr/local/bin/docker"], check=False)
+            if subprocess.run(["sudo", "-n", "install", "-m", "0755", str(docker_bin), "/usr/local/bin/docker"], check=False).returncode != 0:
+                print("entrypoint: failed to install docker CLI into /usr/local/bin", file=sys.stderr)
+                raise SystemExit(1)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -160,7 +176,11 @@ def run_startup_scripts(records: list[RunnerRecord]) -> None:
         if not script_name or script_name in seen:
             continue
         seen.add(script_name)
-        script_path = startup_dir / script_name
+        try:
+            script_path = resolve_within(startup_dir, script_name)
+        except ValueError:
+            print(f"entrypoint: startup_script escapes startup-scripts/: {script_name}", file=sys.stderr)
+            raise SystemExit(1)
         if not script_path.is_file():
             print(f"entrypoint: startup_script not found: {script_path}", file=sys.stderr)
             print("entrypoint: create it under ./startup-scripts/ on the host", file=sys.stderr)
@@ -190,8 +210,12 @@ def prepare_persistent_storage(records: list[RunnerRecord]) -> str:
         print(f"entrypoint: persistent_storage enabled but {root} is missing.", file=sys.stderr)
         print("entrypoint: re-run python3 ./docker/render.py + ./start.sh so the compose file is regenerated with the runner-storage volume.", file=sys.stderr)
         raise SystemExit(1)
-    subprocess.run(["sudo", "-n", "chown", "github-runner:github-runner", str(root)], check=False)
-    subprocess.run(["sudo", "-n", "chmod", "0755", str(root)], check=False)
+    if subprocess.run(["sudo", "-n", "chown", "github-runner:github-runner", str(root)], check=False).returncode != 0:
+        print(f"entrypoint: failed to chown persistent storage root {root}", file=sys.stderr)
+        raise SystemExit(1)
+    if subprocess.run(["sudo", "-n", "chmod", "0755", str(root)], check=False).returncode != 0:
+        print(f"entrypoint: failed to chmod persistent storage root {root}", file=sys.stderr)
+        raise SystemExit(1)
     for record in records:
         prepare_persistent_dir(root, record)
     return str(root)
@@ -200,7 +224,7 @@ def prepare_persistent_storage(records: list[RunnerRecord]) -> str:
 def prepare_persistent_dir(root: Path, record: RunnerRecord) -> None:
     if not record.persistent_storage_enabled:
         return
-    subdir = root / (f"title/{record.title}" if record.persistent_storage_scope == "title" else "shared")
+    subdir = persistent_storage_dir(root, record)
     subdir.mkdir(parents=True, exist_ok=True)
     if record.persistent_storage_ttl <= 0:
         return
@@ -220,13 +244,15 @@ def prepare_persistent_dir(root: Path, record: RunnerRecord) -> None:
 def spawn_pools(records: list[RunnerRecord], runners_base: str, persistent_root: str) -> list[subprocess.Popen[str]]:
     host_label = os.environ.get("HOST_HOSTNAME") or subprocess.run(["hostname"], check=False, stdout=subprocess.PIPE, text=True).stdout.strip()
     architecture = arch_label()
+    runners_root = Path(runners_base).resolve()
+    persistent_storage_root = Path(persistent_root).resolve()
     procs: list[subprocess.Popen[str]] = []
     for record in records:
         workdir = record.workdir or derive_workdir(record.title, record.repo_url)
-        runner_dir = f"{runners_base}/{workdir}"
+        runner_dir = str(resolve_within(runners_root, workdir))
         ps_path = ""
         if record.persistent_storage_enabled:
-            ps_path = f"{persistent_root}/title/{record.title}" if record.persistent_storage_scope == "title" else f"{persistent_root}/shared"
+            ps_path = str(persistent_storage_dir(persistent_storage_root, record))
         labels = merge_auto_labels(
             record.labels,
             [

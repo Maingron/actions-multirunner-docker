@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
 from typing import Iterable
 
 
 def sanitize_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", value)
+
+
+def resolve_within(root: Path, relative: str) -> Path:
+    resolved_root = root.resolve()
+    candidate = (resolved_root / relative).resolve()
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"path escapes base directory: {relative}") from exc
+    return candidate
 
 
 def derive_workdir(title: str, repo_url: str) -> str:

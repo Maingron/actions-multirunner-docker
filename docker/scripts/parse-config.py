@@ -27,6 +27,7 @@ from shared.config_helpers import (
     as_text,
     merge_unique_tokens,
     nested_map,
+    normalize_relative_path,
     normalize_repo_url,
     split_listish,
     to_int_or,
@@ -83,6 +84,31 @@ def normalize_persistent_storage(runner: dict[str, Any], defaults: dict[str, Any
     return enabled, ttl, scope
 
 
+def normalize_workdir(title: str, runner: dict[str, Any]) -> str:
+    try:
+        return normalize_relative_path(runner.get("workdir"))
+    except ValueError as exc:
+        raise ValueError(f"parse-config: runner {title}: invalid workdir: {exc}") from exc
+
+
+def normalize_startup_script(title: str, runner: dict[str, Any], defaults: dict[str, Any]) -> str:
+    startup_script = as_text(runner.get("startup_script", defaults["startup_script"]))
+    if startup_script and startup_script != os.path.basename(startup_script):
+        raise ValueError(
+            f"parse-config: runner {title}: startup_script must name a file directly under startup-scripts/"
+        )
+    return startup_script
+
+
+def validate_runner_auth(title: str, eph: str, token: str, pat: str) -> None:
+    if eph == "1" and not pat:
+        raise ValueError(
+            f"parse-config: runner {title}: ephemeral runners require pat (per-runner, defaults.pat, or $GITHUB_PAT)"
+        )
+    if eph == "0" and not token and not pat:
+        raise ValueError(f"parse-config: runner {title}: persistent runners need token or pat")
+
+
 def normalize_runner_row(
     index: int,
     runner: dict[str, Any],
@@ -95,7 +121,7 @@ def normalize_runner_row(
         raise ValueError(f"parse-config: invalid runner entry (missing title/repo_url) at item {index}")
 
     token = as_text(runner.get("token"))
-    workdir = as_text(runner.get("workdir")).lstrip("/")
+    workdir = normalize_workdir(title, runner)
 
     ephemeral_src = runner["ephemeral"] if "ephemeral" in runner else defaults["ephemeral"]
     eph = "1" if BOOLEAN_STATES.get(as_text(ephemeral_src).strip().lower(), False) else "0"
@@ -111,7 +137,7 @@ def normalize_runner_row(
     image = as_text(runner.get("image", defaults["image"]))
     image = image.lower() if image else DEFAULT_IMAGE
 
-    startup_script = as_text(runner.get("startup_script", defaults["startup_script"]))
+    startup_script = normalize_startup_script(title, runner, defaults)
     packages = merge_unique_tokens(
         split_listish(defaults.get("additional_packages")),
         split_listish(runner.get("additional_packages")),
@@ -129,12 +155,7 @@ def normalize_runner_row(
     min_v, max_v, head_v = normalize_instances(runner, defaults)
     ps_enabled, ps_ttl, ps_scope = normalize_persistent_storage(runner, defaults)
 
-    if eph == "1" and not pat:
-        raise ValueError(
-            f"parse-config: runner {title}: ephemeral runners require pat (per-runner, defaults.pat, or $GITHUB_PAT)"
-        )
-    if eph == "0" and not token and not pat:
-        raise ValueError(f"parse-config: runner {title}: persistent runners need token or pat")
+    validate_runner_auth(title, eph, token, pat)
 
     return [
         title,
