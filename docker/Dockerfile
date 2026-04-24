@@ -69,8 +69,14 @@ RUN chmod +x /usr/local/bin/install-packages.py \
  && echo "github-runner ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/github-runner \
  && chmod 0440 /etc/sudoers.d/github-runner \
  && cd "${TEMPLATE_DIR}" \
+ && case "$(uname -m)" in \
+        x86_64)        runner_arch="x64" ;; \
+        aarch64|arm64) runner_arch="arm64" ;; \
+        armv7l|armv6l|armhf) runner_arch="arm" ;; \
+        *) echo "dockerfile: unsupported arch for GitHub Actions runner: $(uname -m)" >&2; exit 1 ;; \
+    esac \
  && curl -fsSL -o runner.tar.gz \
-        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
+        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${runner_arch}-${RUNNER_VERSION}.tar.gz" \
  && tar xzf runner.tar.gz \
  && rm runner.tar.gz \
  && ./bin/installdependencies.sh \
