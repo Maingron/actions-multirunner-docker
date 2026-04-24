@@ -16,7 +16,7 @@ from pathlib import Path
 from shared.github_api import delete_runner
 from shared.runner_records import RunnerRecord, load_runner_records
 from shared.runner_store_lib import list_records, remove_record
-from shared.runtime_helpers import derive_workdir, merge_auto_labels, resolve_within, sanitize_component
+from shared.runtime_helpers import derive_workdir, merge_auto_labels, resolve_within, sanitize_component, singleton_pool
 
 
 def log(message: str) -> None:
@@ -51,6 +51,29 @@ def persistent_storage_dir(root: Path, record: RunnerRecord) -> Path:
 
 def matching_runners(records: list[RunnerRecord], flavor: str) -> list[RunnerRecord]:
     return [record for record in records if record.image == flavor]
+
+
+def assign_pool_slots(records: list[RunnerRecord]) -> list[str]:
+    """Assign a stable slot suffix to each record, disambiguating duplicates.
+
+    Two config entries may share the same title (and even repo). To avoid
+    on-disk and GitHub name collisions, when a title is reused within the
+    matched set we append an internal ``-pNN`` slot id to the effective title
+    and workdir. Titles that appear only once keep their original naming.
+    """
+    counts: dict[str, int] = {}
+    for record in records:
+        counts[record.title] = counts.get(record.title, 0) + 1
+    running: dict[str, int] = {}
+    slots: list[str] = []
+    for record in records:
+        if counts[record.title] <= 1:
+            slots.append("")
+            continue
+        idx = running.get(record.title, 0) + 1
+        running[record.title] = idx
+        slots.append(f"-p{idx:02d}")
+    return slots
 
 
 def sweep_stale_runners(records: list[RunnerRecord], flavor: str) -> None:
@@ -247,8 +270,12 @@ def spawn_pools(records: list[RunnerRecord], runners_base: str, persistent_root:
     runners_root = Path(runners_base).resolve()
     persistent_storage_root = Path(persistent_root).resolve()
     procs: list[subprocess.Popen[str]] = []
-    for record in records:
+    slots = assign_pool_slots(records)
+    for record, slot in zip(records, slots, strict=True):
+        effective_title = f"{record.title}{slot}"
         workdir = record.workdir or derive_workdir(record.title, record.repo_url)
+        if slot:
+            workdir = f"{workdir}{slot}"
         runner_dir = str(resolve_within(runners_root, workdir))
         ps_path = ""
         if record.persistent_storage_enabled:
@@ -281,7 +308,7 @@ def spawn_pools(records: list[RunnerRecord], runners_base: str, persistent_root:
             }
         )
         proc = subprocess.Popen(
-            ["python3", "/usr/local/bin/pool-manager.py", record.title, record.repo_url, record.token, runner_dir],
+            ["python3", "/usr/local/bin/pool-manager.py", effective_title, record.repo_url, record.token, runner_dir],
             env=env,
             text=True,
         )

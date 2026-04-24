@@ -45,7 +45,7 @@ def instance_dir(base_workdir: str, idx: int, singleton: bool) -> str:
     return base_workdir if singleton else f"{base_workdir}-{idx:02d}"
 
 
-def spawn_instance(base_title: str, repo_url: str, static_token: str, base_workdir: str, singleton: bool, pool_max: int, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str]) -> bool:
+def spawn_instance(base_title: str, repo_url: str, static_token: str, base_workdir: str, singleton: bool, pool_max: int, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str], spawned_at: dict[int, float]) -> bool:
     free_idx = next((idx for idx in range(1, pool_max + 1) if idx not in pids), 0)
     if not free_idx:
         return False
@@ -55,18 +55,31 @@ def spawn_instance(base_title: str, repo_url: str, static_token: str, base_workd
     proc = subprocess.Popen(["python3", "/usr/local/bin/start-runner.py", title, repo_url, static_token, directory], text=True)
     pids[free_idx] = proc
     dirs[free_idx] = directory
+    spawned_at[free_idx] = time.monotonic()
     return True
 
 
-def reap_dead(base_title: str, repo_url: str, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str]) -> None:
+def reap_dead(base_title: str, repo_url: str, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str], spawned_at: dict[int, float], last_busy_at: dict[int, float], phantom_busy_until: list[float], demand_cooldown: int) -> None:
     for idx in tuple(pids):
         proc = pids[idx]
         if proc.poll() is None:
             continue
         proc.wait(timeout=0)
         log(base_title, f"instance {idx} exited", repo_url)
+        # If this instance was recently busy, preserve its demand signal for
+        # a short cooldown window. Without this, an ephemeral worker that
+        # finishes between ticks takes its busy signal with it, causing the
+        # reconcile loop to drop desired capacity mid-workload.
+        last = last_busy_at.get(idx, 0.0)
+        if demand_cooldown > 0 and last > 0.0:
+            elapsed = time.monotonic() - last
+            remaining = demand_cooldown - elapsed
+            if remaining > 0:
+                phantom_busy_until.append(time.monotonic() + remaining)
         del pids[idx]
         dirs.pop(idx, None)
+        spawned_at.pop(idx, None)
+        last_busy_at.pop(idx, None)
 
 
 def shutdown(base_title: str, repo_url: str, pids: dict[int, subprocess.Popen[str]]) -> None:
@@ -81,38 +94,70 @@ def shutdown(base_title: str, repo_url: str, pids: dict[int, subprocess.Popen[st
             proc.kill()
 
 
-def fill_pool(base_title: str, repo_url: str, static_token: str, base_workdir: str, singleton: bool, count: int, pool_max: int, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str]) -> None:
+def fill_pool(base_title: str, repo_url: str, static_token: str, base_workdir: str, singleton: bool, count: int, pool_max: int, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str], spawned_at: dict[int, float]) -> None:
     for _ in range(count):
-        if not spawn_instance(base_title, repo_url, static_token, base_workdir, singleton, pool_max, pids, dirs):
+        if not spawn_instance(base_title, repo_url, static_token, base_workdir, singleton, pool_max, pids, dirs, spawned_at):
             return  # repo_url passed to spawn_instance which logs it
 
 
-def current_pool_state(dirs: dict[int, str]) -> tuple[int, list[int]]:
+def current_pool_state(dirs: dict[int, str], last_busy_at: dict[int, float], demand_cooldown: int) -> tuple[int, list[int]]:
+    """Classify live instances as busy or idle.
+
+    An instance counts as busy if it has a Runner.Worker under its workdir OR
+    it was observed busy within the demand-cooldown window. The cooldown
+    smooths over the gap between "worker exits" and "ephemeral supervisor
+    respawns a fresh listener", preventing a peer instance from being drained
+    during an active workload.
+    """
+    now = time.monotonic()
     busy = 0
     idle_idxs: list[int] = []
     for idx, directory in dirs.items():
-        if worker_active_in_dir(directory):
+        active = worker_active_in_dir(directory)
+        if active:
+            last_busy_at[idx] = now
             busy += 1
-        else:
-            idle_idxs.append(idx)
+            continue
+        last = last_busy_at.get(idx, 0.0)
+        if demand_cooldown > 0 and last > 0.0 and now - last < demand_cooldown:
+            busy += 1
+            continue
+        idle_idxs.append(idx)
     return busy, idle_idxs
 
 
-def reconcile_pool(base_title: str, repo_url: str, static_token: str, base_workdir: str, singleton: bool, pool_min: int, pool_max: int, pool_headroom: int, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str], verbose: bool) -> None:
-    busy, idle_idxs = current_pool_state(dirs)
+def expire_phantoms(phantom_busy_until: list[float]) -> int:
+    now = time.monotonic()
+    phantom_busy_until[:] = [until for until in phantom_busy_until if until > now]
+    return len(phantom_busy_until)
+
+
+def reconcile_pool(base_title: str, repo_url: str, static_token: str, base_workdir: str, singleton: bool, pool_min: int, pool_max: int, pool_headroom: int, scale_down_grace: int, demand_cooldown: int, pids: dict[int, subprocess.Popen[str]], dirs: dict[int, str], spawned_at: dict[int, float], last_busy_at: dict[int, float], phantom_busy_until: list[float], verbose: bool) -> None:
+    busy, idle_idxs = current_pool_state(dirs, last_busy_at, demand_cooldown)
+    phantoms = expire_phantoms(phantom_busy_until)
+    effective_busy = busy + phantoms
     alive = len(pids)
-    desired = max(pool_min, min(pool_max, busy + pool_headroom))
+    desired = max(pool_min, min(pool_max, effective_busy + pool_headroom))
     if verbose:
-        log(base_title, f"tick: busy={busy} idle={alive - busy} alive={alive} desired={desired} (min={pool_min} max={pool_max} headroom={pool_headroom})", repo_url)
+        log(base_title, f"tick: busy={busy} phantom={phantoms} idle={alive - busy} alive={alive} desired={desired} (min={pool_min} max={pool_max} headroom={pool_headroom})", repo_url)
     if alive < desired:
         need = desired - alive
-        log(base_title, f"scale up: busy={busy} alive={alive} -> spawning {need} (desired={desired})", repo_url)
-        fill_pool(base_title, repo_url, static_token, base_workdir, singleton, need, pool_max, pids, dirs)
+        log(base_title, f"scale up: busy={busy} phantom={phantoms} alive={alive} -> spawning {need} (desired={desired})", repo_url)
+        fill_pool(base_title, repo_url, static_token, base_workdir, singleton, need, pool_max, pids, dirs, spawned_at)
         return
     if alive <= desired:
         return
     excess = alive - desired
-    for idx in idle_idxs:
+    now = time.monotonic()
+    # Only drain idle instances that have been alive longer than the grace
+    # period. Freshly-spawned instances commonly appear idle for a second or
+    # two while Runner.Listener boots; terminating them immediately causes
+    # needless churn and delays job pickup.
+    drainable = [idx for idx in idle_idxs if now - spawned_at.get(idx, 0.0) >= scale_down_grace]
+    if verbose and len(drainable) < len(idle_idxs):
+        holding = len(idle_idxs) - len(drainable)
+        log(base_title, f"scale down: holding {holding} idle instance(s) within {scale_down_grace}s grace", repo_url)
+    for idx in drainable:
         if excess <= 0:
             break
         log(base_title, f"scale down: draining idle instance {idx} (pid={pids[idx].pid})", repo_url)
@@ -129,12 +174,17 @@ def main() -> int:
     pool_min = max(env_int("POOL_MIN", 1), 1)
     pool_max = max(env_int("POOL_MAX", pool_min), pool_min)
     pool_headroom = env_int("POOL_HEADROOM", 0)
+    scale_down_grace = env_int("POOL_SCALE_DOWN_GRACE", 10)
+    demand_cooldown = env_int("POOL_DEMAND_COOLDOWN", 30)
     poll_interval = max(env_int("POOL_POLL_INTERVAL", 5), 1)
     verbose = os.environ.get("POOL_VERBOSE", "0") == "1"
     singleton = singleton_pool(pool_min, pool_max, pool_headroom)
 
     pids: dict[int, subprocess.Popen[str]] = {}
     dirs: dict[int, str] = {}
+    spawned_at: dict[int, float] = {}
+    last_busy_at: dict[int, float] = {}
+    phantom_busy_until: list[float] = []
     stopping = False
 
     def handle_signal(signum: int, frame: object) -> None:
@@ -146,14 +196,14 @@ def main() -> int:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    log(base_title, f"starting pool (min={pool_min} max={pool_max} headroom={pool_headroom})", repo_url)
-    fill_pool(base_title, repo_url, static_token, base_workdir, singleton, pool_min, pool_max, pids, dirs)
+    log(base_title, f"starting pool (min={pool_min} max={pool_max} headroom={pool_headroom} scale_down_grace={scale_down_grace}s demand_cooldown={demand_cooldown}s)", repo_url)
+    fill_pool(base_title, repo_url, static_token, base_workdir, singleton, pool_min, pool_max, pids, dirs, spawned_at)
 
     while not stopping:
         time.sleep(poll_interval)
-        reap_dead(base_title, repo_url, pids, dirs)
+        reap_dead(base_title, repo_url, pids, dirs, spawned_at, last_busy_at, phantom_busy_until, demand_cooldown)
 
-        reconcile_pool(base_title, repo_url, static_token, base_workdir, singleton, pool_min, pool_max, pool_headroom, pids, dirs, verbose)
+        reconcile_pool(base_title, repo_url, static_token, base_workdir, singleton, pool_min, pool_max, pool_headroom, scale_down_grace, demand_cooldown, pids, dirs, spawned_at, last_busy_at, phantom_busy_until, verbose)
     return 0
 
 

@@ -68,3 +68,44 @@ def has_child_process(root_pid: int) -> bool:
                 if value.strip() == str(root_pid):
                     return True
     return False
+
+
+def parse_ppid(status_text: str) -> int:
+    for line in status_text.splitlines():
+        if line.startswith("PPid:"):
+            _, value = line.split(":", 1)
+            try:
+                return int(value.strip())
+            except ValueError:
+                return -1
+    return -1
+
+
+def snapshot_process_tree() -> tuple[dict[int, list[int]], dict[int, str]]:
+    children_by_ppid: dict[int, list[int]] = {}
+    comm_by_pid: dict[int, str] = {}
+    for proc_dir in proc_pid_dirs():
+        pid = int(proc_dir.name)
+        try:
+            status_text = (proc_dir / "status").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        ppid = parse_ppid(status_text)
+        if ppid >= 0:
+            children_by_ppid.setdefault(ppid, []).append(pid)
+        comm_by_pid[pid] = read_comm(pid)
+    return children_by_ppid, comm_by_pid
+
+
+def has_descendant_with_comm(root_pid: int, comm: str) -> bool:
+    children_by_ppid, comm_by_pid = snapshot_process_tree()
+
+    stack = list(children_by_ppid.get(root_pid, []))
+    while stack:
+        pid = stack.pop()
+        if comm_by_pid.get(pid, "") == comm:
+            return True
+        stack.extend(children_by_ppid.get(pid, []))
+
+    return False
