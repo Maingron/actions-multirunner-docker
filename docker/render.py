@@ -181,6 +181,11 @@ def build_dind_service(tag: str, ps_enabled: bool) -> dict[str, Any]:
         "environment": {"DOCKER_TLS_CERTDIR": "/certs"},
         "volumes": volumes,
         "networks": [f"dind-{tag}"],
+        # Cap DinD daemon logs so they don't fill the host disk over time.
+        "logging": {
+            "driver": "json-file",
+            "options": {"max-size": "10m", "max-file": "3"},
+        },
         "healthcheck": {
             "test": ["CMD", "docker", "-H", "unix:///var/run/docker.sock", "version"],
             "interval": "5s",

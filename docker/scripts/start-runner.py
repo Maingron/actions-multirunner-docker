@@ -37,6 +37,12 @@ class RunnerSupervisor:
         self.watchdog_misses = max(int(os.environ.get("WATCHDOG_MISSES", "2") or "2"), 1)
         self.persistent_storage_path = os.environ.get("PERSISTENT_STORAGE_PATH", "")
         self.persistent_storage_ttl = max(int(os.environ.get("PERSISTENT_STORAGE_TTL", "0") or "0"), 0)
+        # Docker housekeeping: when DOCKER_HOST is set the runner shares a DinD
+        # sidecar whose /var/lib/docker grows unbounded as CI jobs pull/build
+        # images. Pruning between jobs keeps storage flat. Disable with
+        # DOCKER_PRUNE_BETWEEN_JOBS=0.
+        self.docker_host = os.environ.get("DOCKER_HOST", "")
+        self.docker_prune = os.environ.get("DOCKER_PRUNE_BETWEEN_JOBS", "1") == "1"
         self.run_proc: subprocess.Popen[str] | None = None
         self.current_runner_id = ""
         self.jit_id_file = ""
@@ -73,8 +79,108 @@ class RunnerSupervisor:
     def worker_active(self) -> bool:
         return any(cwd_under(pid, self.runner_dir) for pid in find_pids_by_comm("Runner.Worker"))
 
+    def force_remove_dir(self, target: str) -> None:
+        """Robustly remove a directory tree.
+
+        CI jobs that bind-mount the runner workspace into containers running as
+        root can leave behind root-owned files (in ``_work``, ``_diag``, build
+        caches, etc.) that the UID 1000 runner cannot delete. Plain
+        ``shutil.rmtree(..., ignore_errors=True)`` silently leaves these files
+        in place and storage grows unbounded across ephemeral iterations. Fall
+        back to ``sudo rm -rf`` so leftovers from previous jobs are always
+        purged before the next iteration starts.
+        """
+        path = Path(target)
+        if not path.exists() and not path.is_symlink():
+            return
+        shutil.rmtree(target, ignore_errors=True)
+        if not path.exists() and not path.is_symlink():
+            return
+        # ignore_errors swallowed something - escalate.
+        subprocess.run(
+            ["sudo", "-n", "rm", "-rf", "--", target],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if path.exists() or path.is_symlink():
+            self.log(f"warning: could not fully remove {target}; storage may leak")
+
+    def docker_cleanup(self) -> None:
+        """Prune DinD sidecar resources between ephemeral jobs.
+
+        With ``docker.enabled: true`` each runner shares a DinD sidecar whose
+        ``/var/lib/docker`` (a named volume) accumulates pulled/built images,
+        stopped containers, dangling layers and build cache. Without periodic
+        pruning the volume fills the host disk. Ephemeral runners reach a
+        clean state between jobs (no live containers from prior workloads)
+        which is the safe moment to prune everything.
+
+        Sibling runners in the same flavor share this DinD daemon. To avoid
+        wiping their in-flight build cache or intermediate images, we skip
+        pruning whenever any container is currently running on the daemon.
+
+        SAFETY: this MUST only ever target our isolated DinD sidecar, never
+        the host's docker daemon. render.py always sets
+        ``DOCKER_HOST=tcp://dind-<tag>:2376`` for runners that opt in. We
+        require that exact shape and pass an explicit env (no $HOME, no
+        $DOCKER_CONFIG, no fallback to /var/run/docker.sock) so a stray or
+        bind-mounted host socket cannot be hit by accident.
+        """
+        if not self.docker_prune or not self.docker_host:
+            return
+        if not self.docker_host.startswith("tcp://dind-"):
+            # Defense in depth: refuse to prune anything that isn't clearly
+            # our compose-rendered DinD sidecar. Host sockets, remote
+            # daemons, or unrecognized hosts are off-limits.
+            self.log(f"docker prune: refusing — DOCKER_HOST={self.docker_host!r} is not our DinD sidecar")
+            return
+        if shutil.which("docker") is None:
+            return
+        # Build a minimal, explicit environment so the docker CLI cannot
+        # fall back to the host's unix socket via $DOCKER_HOST inheritance
+        # surprises, $DOCKER_CONFIG contexts, etc.
+        docker_env = {
+            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            "DOCKER_HOST": self.docker_host,
+        }
+        for key in ("DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+            value = os.environ.get(key)
+            if value:
+                docker_env[key] = value
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "-q"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=15,
+                env=docker_env,
+            )
+        except subprocess.TimeoutExpired:
+            return
+        if result.returncode != 0:
+            return
+        if result.stdout.strip():
+            # A sibling runner is mid-job; pruning now could yank cache out
+            # from under their build. Wait for the next quiet window.
+            return
+        for cmd in (
+            ["docker", "system", "prune", "-af", "--volumes"],
+            ["docker", "builder", "prune", "-af"],
+        ):
+            try:
+                subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120, env=docker_env)
+            except subprocess.TimeoutExpired:
+                # Don't let a stuck docker daemon kill the supervisor; we
+                # try again after the next job. Storage may temporarily
+                # creep but the supervisor stays alive.
+                self.log("warning: docker prune timed out; will retry next cycle")
+                return
+
     def materialise(self) -> None:
-        shutil.rmtree(self.runner_dir, ignore_errors=True)
+        self.force_remove_dir(self.runner_dir)
         Path(self.runner_dir).parent.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(["cp", "-al", self.template_dir, self.runner_dir], check=False)
         if proc.returncode != 0:
@@ -115,6 +221,12 @@ class RunnerSupervisor:
                 self.run_proc.kill()
         if self.ephemeral:
             self.deregister_current_runner()
+            # Pool scale-down (or container shutdown) leaves the per-instance
+            # workdir behind on the runner-workspace named volume. With
+            # docker.enabled the tmpfs is replaced by a persistent named
+            # volume, so leftover _work/_diag from a drained slot lives
+            # forever unless we wipe it here.
+            self.force_remove_dir(self.runner_dir)
         elif Path(self.runner_dir).is_dir():
             try:
                 token = self.registration_token()
@@ -202,6 +314,11 @@ class RunnerSupervisor:
                 remove_record(self.current_runner_id)
             self.current_runner_id = ""
             self.log("runner exited, flushing state")
+            # Aggressively reclaim the per-job workdir (root-owned files from
+            # docker bind-mounts) and DinD storage so disk usage stays flat
+            # across ephemeral iterations.
+            self.force_remove_dir(self.runner_dir)
+            self.docker_cleanup()
             time.sleep(self.restart_delay)
 
     def register_persistent(self) -> bool:

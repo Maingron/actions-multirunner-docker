@@ -1,6 +1,14 @@
 x-runner-base:
   restart: unless-stopped
   pids_limit: -1
+  # Cap container log files so they don't fill the host disk over time.
+  # Pool managers and runners are chatty (every poll tick, every job).
+  # Default json-file driver retains everything forever otherwise.
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
   volumes:
     - ../config.yml:/etc/github-runners/config.yml:ro
     - ../startup-scripts:/etc/github-runners/startup:ro
