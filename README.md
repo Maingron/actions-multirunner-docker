@@ -1,6 +1,23 @@
 # github-multirunner-docker
 **✨ This project is AI-Generated**
 
+## **Disclaimer** and Known Bugs
+
+### Disclaimer
+Firstly, this project is ✨AI-Generated (wee). I had the need for a project that allows spawning GitHub action workers. Since my knowledge with Docker is limited, I asked an AI on this one.  
+I do **not** recommend running this on a public server or any other system that's heavily relied on.  
+The project probably contains memory- and storage leaks, and may have other issues as well.  
+**Use at your own risk.** I do not feel comfortable about AI code in general, however.  
+
+### Regarding the Known Bugs
+- I've noticed the running project silently growing in size in the background, and this doesn't get cleaned up automatically. This **could** be a storage leak. If you're running this on a server or system with fairly small storage attached, this can become a problem pretty quickly.
+
+### Issue reporting
+If you do notice any issues, please feel free to [create an issue on GitHub](https://github.com/Maingron/actions-multirunner-docker/issues).  
+If you notice a critical issue (eg security related), please [use a contact method listed on Maingron.com/contact](https://maingron.com/contact)
+
+## About
+
 Plain Debian (stable-slim) container that hosts N GitHub Actions self-hosted
 runners in parallel, driven entirely by a single YAML config file. No web UI,
 no database, no persistence.
