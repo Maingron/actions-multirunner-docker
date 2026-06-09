@@ -1,4 +1,5 @@
 # github-multirunner-docker
+**✨ This project is AI-Generated**
 
 Plain Debian (stable-slim) container that hosts N GitHub Actions self-hosted
 runners in parallel, driven entirely by a single YAML config file. No web UI,
